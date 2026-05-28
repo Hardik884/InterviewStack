@@ -1,0 +1,33 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  background-color: #f6f4ef;
+  color: #1c1a22;
+  background-image:
+    radial-gradient(circle at 10% 10%, rgba(255, 106, 61, 0.08), transparent 45%),
+    radial-gradient(circle at 80% 0%, rgba(29, 78, 137, 0.08), transparent 40%),
+    linear-gradient(180deg, rgba(246, 244, 239, 0.9), rgba(238, 233, 226, 0.9));
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+code {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
