@@ -1,104 +1,165 @@
 const axios = require("axios");
+const { resolveJdoodleLanguage } = require("./jdoodleLanguages");
 
-const JUDGE0_URL =
-  process.env.JUDGE0_URL || "https://judge0-ce.p.rapidapi.com";
-const JUDGE0_API_KEY = process.env.JUDGE0_API_KEY || "";
-const JUDGE0_API_HOST = process.env.JUDGE0_API_HOST || "";
-const JUDGE0_TIMEOUT_MS = Number(process.env.JUDGE0_TIMEOUT_MS || 10000);
-const CPU_TIME_LIMIT = Number(process.env.JUDGE0_CPU_TIME_LIMIT || 2);
-const WALL_TIME_LIMIT = Number(process.env.JUDGE0_WALL_TIME_LIMIT || 5);
+const JDOODLE_URL = "https://api.jdoodle.com/v1/execute";
+const JDOODLE_TIMEOUT_MS = Number(process.env.JDOODLE_TIMEOUT_MS || 10000);
+const CPU_TIME_LIMIT = Number(process.env.JDOODLE_CPU_TIME_LIMIT || 2);
 
-const languageMap = {
-  javascript: 63,
-  python: 71,
-  cpp: 54,
-  java: 62,
+const normalizeOutput = (value) => {
+  if (value === undefined || value === null) {
+    return "";
+  }
+
+  return String(value)
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
 };
 
-const buildHeaders = () => {
-  const headers = { "Content-Type": "application/json" };
-  if (JUDGE0_API_KEY) {
-    headers["X-RapidAPI-Key"] = JUDGE0_API_KEY;
+const detectLeetCodeStyle = (language, sourceCode) => {
+  if (!sourceCode) {
+    return null;
   }
-  if (JUDGE0_API_HOST) {
-    headers["X-RapidAPI-Host"] = JUDGE0_API_HOST;
+
+  if (language === "cpp") {
+    const hasSolution = /class\s+Solution\b/.test(sourceCode);
+    const hasMain = /\bint\s+main\s*\(/.test(sourceCode);
+    if (hasSolution && !hasMain) {
+      return "LeetCode-style method submissions are not yet supported. Please submit complete executable programs.";
+    }
   }
-  return headers;
+
+  if (language === "java") {
+    const hasSolution = /class\s+Solution\b/.test(sourceCode);
+    const hasMain = /public\s+static\s+void\s+main\s*\(/.test(sourceCode);
+    if (hasSolution && !hasMain) {
+      return "LeetCode-style method submissions are not yet supported. Please submit complete executable programs.";
+    }
+  }
+
+  return null;
 };
 
-const normalizeOutput = (value) => String(value || "").trim();
+const parseMemory = (value) => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const numeric = Number(String(value).replace(/[^0-9.]/g, ""));
+  return Number.isNaN(numeric) ? null : numeric;
+};
 
 const runSubmission = async ({ sourceCode, language, testCase }) => {
-  const languageId = languageMap[language];
-  if (!languageId) {
+  const mapping = resolveJdoodleLanguage(language);
+  if (!mapping) {
     throw new Error(`Unsupported language: ${language}`);
   }
 
-  console.log("Sending to Judge0", {
+  if (!process.env.JDOODLE_CLIENT_ID || !process.env.JDOODLE_CLIENT_SECRET) {
+    throw new Error("JDoodle credentials are missing");
+  }
+
+  const leetCodeMessage = detectLeetCodeStyle(language, sourceCode);
+  if (leetCodeMessage) {
+    console.warn("Compilation failed", { reason: "leetcode-style" });
+    return {
+      statusCode: 400,
+      compilationStatus: "1",
+      stdout: "",
+      stderr: leetCodeMessage,
+      time: null,
+      memory: null,
+      passed: false,
+    };
+  }
+
+  console.log("Sending code to JDoodle", {
     language,
     inputSize: String(testCase.input || "").length,
   });
 
   const payload = {
-    source_code: sourceCode,
-    language_id: languageId,
+    clientId: process.env.JDOODLE_CLIENT_ID,
+    clientSecret: process.env.JDOODLE_CLIENT_SECRET,
+    script: sourceCode,
     stdin: testCase.input || "",
-    expected_output: testCase.expectedOutput || "",
-    cpu_time_limit: CPU_TIME_LIMIT,
-    wall_time_limit: WALL_TIME_LIMIT,
+    language: mapping.language,
+    versionIndex: mapping.versionIndex,
+    compileOnly: false,
   };
 
   let response;
   try {
-    response = await axios.post(
-      `${JUDGE0_URL}/submissions?base64_encoded=false&wait=true`,
-      payload,
-      { headers: buildHeaders(), timeout: JUDGE0_TIMEOUT_MS }
-    );
+    response = await axios.post(JDOODLE_URL, payload, {
+      timeout: JDOODLE_TIMEOUT_MS,
+    });
   } catch (error) {
     const status = error.response?.status;
     const data = error.response?.data;
-    console.error("Judge0 request failed", {
+    console.error("JDoodle request failed", {
       status,
       data,
       message: error.message,
     });
-    throw error;
+
+    if (status === 401 || status === 403) {
+      throw new Error("JDoodle authentication failed");
+    }
+
+    if (status === 429) {
+      throw new Error("JDoodle quota exceeded");
+    }
+
+    throw new Error("JDoodle API request failed");
   }
 
-  console.log("Judge0 response received", {
-    status: response.data?.status?.description,
+  console.log("JDoodle response received", {
+    statusCode: response.data?.statusCode,
   });
 
   const result = response.data || {};
+  const compilationStatus = String(result.compilationStatus || "0");
+  const stdout = result.output || "";
+  const expected = testCase.expectedOutput || "";
+  const normalizedActual = normalizeOutput(stdout);
+  const normalizedExpected = normalizeOutput(expected);
+  const passed = normalizedActual === normalizedExpected;
+
+  console.log({
+    actualOutput: stdout,
+    expectedOutput: expected,
+    normalizedActual,
+    normalizedExpected,
+    stderr: compilationStatus !== "0" ? result.compilationStatus : "",
+  });
+
   return {
-    statusId: result.status?.id,
-    statusDescription: result.status?.description,
-    stdout: result.stdout || "",
-    stderr: result.stderr || "",
-    compileOutput: result.compile_output || "",
-    time: result.time ? Number(result.time) : null,
-    memory: result.memory ? Number(result.memory) : null,
-    passed:
-      normalizeOutput(result.stdout) ===
-      normalizeOutput(testCase.expectedOutput || ""),
+    statusCode: result.statusCode,
+    compilationStatus,
+    stdout,
+    stderr: compilationStatus !== "0" ? result.compilationStatus : "",
+    time: result.cpuTime ? Number(result.cpuTime) : null,
+    memory: parseMemory(result.memory),
+    passed,
   };
 };
 
-const mapVerdict = (statusId, passed) => {
-  if (statusId === 6) {
+const mapVerdict = ({ statusCode, compilationStatus, time, passed }) => {
+  if (compilationStatus !== "0") {
+    console.warn("Compilation failed", { compilationStatus });
     return "Compilation Error";
   }
 
-  if (statusId === 5) {
+  if (time !== null && time > CPU_TIME_LIMIT) {
     return "Time Limit Exceeded";
   }
 
-  if (statusId === 7 || statusId === 8 || statusId === 9) {
+  if (statusCode && statusCode !== 200) {
+    console.warn("Runtime failed", { statusCode });
     return "Runtime Error";
   }
 
-  if (statusId === 3 && passed) {
+  if (passed) {
     return "Accepted";
   }
 
@@ -112,15 +173,34 @@ const executeAgainstTests = async ({ sourceCode, language, testCases }) => {
     const result = await runSubmission({ sourceCode, language, testCase });
     results.push(result);
 
-    if (result.statusId !== 3 || !result.passed) {
-      return { results, verdict: mapVerdict(result.statusId, result.passed) };
+    const verdict = mapVerdict(result);
+    console.log("Verdict generated", { verdict });
+
+    if (verdict !== "Accepted") {
+      return { results, verdict };
     }
   }
 
   return { results, verdict: "Accepted" };
 };
 
+const executeRun = async ({ sourceCode, language, input }) => {
+  const result = await runSubmission({
+    sourceCode,
+    language,
+    testCase: { input: input || "", expectedOutput: "" },
+  });
+
+  return {
+    stdout: result.stdout,
+    stderr: result.stderr,
+    runtime: result.time ? Math.round(result.time * 1000) : null,
+    memory: result.memory,
+  };
+};
+
 module.exports = {
   executeAgainstTests,
   mapVerdict,
+  executeRun,
 };

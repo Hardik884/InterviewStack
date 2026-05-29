@@ -7,6 +7,13 @@ type CreateSubmissionPayload = {
   roomId?: string;
 };
 
+type RunSubmissionPayload = {
+  problemId: string;
+  sourceCode: string;
+  language: string;
+  input?: string;
+};
+
 export const createSubmission = async (payload: CreateSubmissionPayload) => {
   const response = await api.post("/api/submissions", payload);
   return response.data;
@@ -14,6 +21,11 @@ export const createSubmission = async (payload: CreateSubmissionPayload) => {
 
 export const fetchSubmissionsByProblem = async (problemId: string) => {
   const response = await api.get(`/api/submissions/problem/${problemId}`);
+  return response.data;
+};
+
+export const runSubmission = async (payload: RunSubmissionPayload) => {
+  const response = await api.post("/api/submissions/run", payload);
   return response.data;
 };
 

@@ -4,6 +4,7 @@ const { delCache, delCacheByPattern } = require("../services/cacheService");
 const submissionQueue = require("../queues/submissionQueue");
 const { getIO } = require("../sockets/socketRegistry");
 const { SUBMISSION_QUEUE_NAME } = require("../queues/constants");
+const { executeRun } = require("../services/codeExecutionService");
 
 const createSubmission = async (req, res, next) => {
   try {
@@ -75,6 +76,36 @@ const createSubmission = async (req, res, next) => {
   }
 };
 
+const runSubmission = async (req, res, next) => {
+  try {
+    const { problemId, code, sourceCode, language, input } = req.body;
+    console.log("Run API hit", { problemId, language });
+
+    const problem = await Problem.findById(problemId);
+    if (!problem) {
+      return res.status(404).json({ message: "Problem not found" });
+    }
+
+    const examples = problem.examples?.length
+      ? problem.examples
+      : problem.testCases || [];
+    const sampleInput = input || examples?.[0]?.input || "";
+
+    const result = await executeRun({
+      sourceCode: sourceCode || code,
+      language,
+      input: sampleInput,
+    });
+
+    return res.status(200).json({
+      message: "Run completed",
+      result,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
 const getMySubmissions = async (req, res, next) => {
   try {
     const submissions = await Submission.find({
@@ -101,6 +132,7 @@ const getSubmissionsByProblem = async (req, res, next) => {
 
 module.exports = {
   createSubmission,
+  runSubmission,
   getMySubmissions,
   getSubmissionsByProblem,
 };

@@ -195,7 +195,7 @@ const ProblemDetails = () => {
           <div className="mt-4 flex flex-wrap gap-3">
             <Button
               variant="ghost"
-              onClick={() => setOutput("All sample tests passed.")}
+              onClick={() => setOutput("Run completed. Check output tab.")}
             >
               Run code
             </Button>

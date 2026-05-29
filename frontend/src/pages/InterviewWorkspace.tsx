@@ -19,27 +19,59 @@ import { useInterviewRoom } from "../hooks/useInterviewRoom";
 import { useCollaborativeEditor } from "../hooks/useCollaborativeEditor";
 import { useSubmissionsByProblem } from "../hooks/useSubmissionsByProblem";
 import { useCreateSubmission } from "../hooks/useCreateSubmission";
+import { useRunSubmission } from "../hooks/useRunSubmission";
 import { getSocket } from "../sockets/socketClient";
 
 const tabList = ["Description", "Hints", "Discussion", "Submissions"];
-const outputTabs = ["Testcases", "Output", "Console", "Result"];
+const outputTabs = ["Output", "Error", "Test Cases"];
+
+type ExampleCase = {
+  input: string;
+  output?: string;
+  expectedOutput?: string;
+};
+
+type SubmissionItem = {
+  _id: string;
+  createdAt: string;
+  language?: string;
+  verdict?: string;
+  status?: string;
+  runtime?: number | null;
+  memory?: number | null;
+  stdout?: string;
+  stderr?: string;
+};
+
+type RunResult = {
+  stdout?: string;
+  stderr?: string;
+  runtime?: number | null;
+  memory?: number | null;
+};
 
 const InterviewWorkspace = () => {
   const { roomId = "", problemId = "" } = useParams();
-  const { user, token } = useAuth();
+  const { user, token } = useAuth() as {
+    user?: { name?: string } | null;
+    token?: string | null;
+  };
   const queryClient = useQueryClient();
   const { data, isLoading } = useProblem(problemId);
   const problem = data?.problem;
   const [activeTab, setActiveTab] = useState("Description");
-  const [bottomTab, setBottomTab] = useState("Testcases");
+  const [bottomTab, setBottomTab] = useState("Output");
   const [bottomOpen, setBottomOpen] = useState(true);
   const [output, setOutput] = useState("Run code to see output.");
-  const [runStatus, setRunStatus] = useState("idle");
+  const [runResult, setRunResult] = useState<RunResult | null>(null);
+  const [runError, setRunError] = useState("");
   const { data: submissionData } = useSubmissionsByProblem(problemId);
   const submissionMutation = useCreateSubmission();
-  const submissions = submissionData?.submissions || [];
+  const runMutation = useRunSubmission();
+  const submissions = (submissionData?.submissions || []) as SubmissionItem[];
   const latestSubmission = submissions[0];
   const isSubmitting = submissionMutation.isPending;
+  const isRunning = runMutation.isPending;
 
   const {
     participants,
@@ -55,7 +87,7 @@ const InterviewWorkspace = () => {
     name: user?.name || "Anonymous",
   });
 
-  const resolveStarterCode = (value, lang) => {
+  const resolveStarterCode = (value: string | Record<string, string> | undefined, lang: string) => {
     if (!value) {
       return "// Start coding\n";
     }
@@ -99,17 +131,38 @@ const InterviewWorkspace = () => {
     }
 
     return problem?.testCases || [];
-  }, [problem]);
+  }, [problem]) as ExampleCase[];
 
   const handleRun = () => {
-    setRunStatus("running");
-    setOutput("Running sample tests...");
-    setBottomOpen(true);
+    if (!problemId) {
+      return;
+    }
 
-    setTimeout(() => {
-      setRunStatus("success");
-      setOutput("All sample tests passed. Runtime 42ms, Memory 12.4MB.");
-    }, 800);
+    const sampleInput = examples?.[0]?.input || "";
+
+    setRunError("");
+    setOutput("Running sample input...");
+    setBottomOpen(true);
+    setBottomTab("Output");
+
+    runMutation.mutate(
+      {
+        problemId,
+        sourceCode: code,
+        language,
+        input: sampleInput,
+      },
+      {
+        onSuccess: (data) => {
+          setRunResult(data?.result || null);
+          setOutput(data?.result?.stdout || "No output.");
+        },
+        onError: (error) => {
+          setRunResult(null);
+          setRunError(error?.message || "Run failed");
+        },
+      }
+    );
   };
 
   const handleSubmit = () => {
@@ -117,7 +170,6 @@ const InterviewWorkspace = () => {
       return;
     }
 
-    setRunStatus("running");
     setOutput("Submission queued. Await verdict.");
     setBottomOpen(true);
 
@@ -137,7 +189,7 @@ const InterviewWorkspace = () => {
       return;
     }
 
-    const handler = (payload) => {
+    const handler = (payload: { problemId?: string }) => {
       if (payload?.problemId === problemId) {
         queryClient.invalidateQueries({ queryKey: ["submissions", problemId] });
       }
@@ -149,21 +201,43 @@ const InterviewWorkspace = () => {
     };
   }, [problemId, queryClient]);
 
-  const verdictClass = (verdict) => {
+  const verdictClass = (verdict?: string) => {
     switch (verdict) {
       case "Accepted":
         return "bg-emerald-500/10 text-emerald-700 border-emerald-500/20";
       case "Wrong Answer":
         return "bg-rose-500/10 text-rose-700 border-rose-500/20";
       case "Compilation Error":
-      case "Runtime Error":
         return "bg-amber-500/10 text-amber-700 border-amber-500/20";
+      case "Runtime Error":
+        return "bg-yellow-500/10 text-yellow-700 border-yellow-500/20";
       case "Time Limit Exceeded":
-        return "bg-orange-500/10 text-orange-700 border-orange-500/20";
+        return "bg-purple-500/10 text-purple-700 border-purple-500/20";
       default:
         return "bg-ink/5 text-ink/70 border-ink/15";
     }
   };
+
+  const statusClass = (status?: string) => {
+    switch (status) {
+      case "queued":
+        return "bg-ink/5 text-ink/70 border-ink/15";
+      case "processing":
+        return "bg-blue-500/10 text-blue-700 border-blue-500/20";
+      case "completed":
+        return "bg-emerald-500/10 text-emerald-700 border-emerald-500/20";
+      case "failed":
+        return "bg-rose-500/10 text-rose-700 border-rose-500/20";
+      default:
+        return "bg-ink/5 text-ink/70 border-ink/15";
+    }
+  };
+
+  const normalizeOutput = (value?: string) =>
+    String(value || "")
+      .replace(/\r\n/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .trim();
 
   const leftPanel = (
     <div className="flex h-full min-h-0 flex-col">
@@ -184,13 +258,13 @@ const InterviewWorkspace = () => {
               <DifficultyBadge value={problem?.difficulty} />
             </div>
             <div className="flex flex-wrap gap-2">
-              {(problem?.tags || []).map((tag) => (
+              {(problem?.tags || []).map((tag: string) => (
                 <TagChip key={tag} label={tag} />
               ))}
             </div>
             <div className="flex flex-wrap gap-2">
               {(problem?.companyTags || ["Amazon", "Google", "Microsoft"]).map(
-                (tag) => (
+                (tag: string) => (
                   <Badge key={tag}>{tag}</Badge>
                 )
               )}
@@ -225,7 +299,7 @@ const InterviewWorkspace = () => {
                 Examples
               </p>
               {examples.length ? (
-                examples.map((item, index) => (
+                examples.map((item: ExampleCase, index: number) => (
                   <div key={`${item.input}-${index}`} className="mt-3">
                     <p className="text-xs text-ink/60">Input</p>
                     <code className="block rounded-xl bg-ink/5 px-3 py-2 text-xs">
@@ -233,7 +307,7 @@ const InterviewWorkspace = () => {
                     </code>
                     <p className="mt-2 text-xs text-ink/60">Output</p>
                     <code className="block rounded-xl bg-ink/5 px-3 py-2 text-xs">
-                      {item.expectedOutput}
+                      {item.output || item.expectedOutput}
                     </code>
                   </div>
                 ))
@@ -247,7 +321,7 @@ const InterviewWorkspace = () => {
               </p>
               {problem?.constraints?.length ? (
                 <ul className="mt-2 list-disc pl-4 text-xs text-ink/60">
-                  {problem.constraints.map((item, index) => (
+                  {problem.constraints.map((item: string, index: number) => (
                     <li key={`${item}-${index}`}>{item}</li>
                   ))}
                 </ul>
@@ -263,7 +337,7 @@ const InterviewWorkspace = () => {
         {activeTab === "Hints" && (
           <div className="space-y-2 text-xs text-ink/70">
             {problem?.hints?.length ? (
-              problem.hints.map((hint, index) => (
+              problem.hints.map((hint: string, index: number) => (
                 <p key={`${hint}-${index}`}>{hint}</p>
               ))
             ) : (
@@ -283,39 +357,41 @@ const InterviewWorkspace = () => {
         {activeTab === "Submissions" && (
           <div className="space-y-3">
             {submissions.length ? (
-              submissions.slice(0, 6).map((submission) => (
-                <div
-                  key={submission._id}
-                  className="rounded-2xl border border-ink/10 bg-white/80 p-3"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <p className="text-xs text-ink/60">
-                        {new Date(submission.createdAt).toLocaleString()}
-                      </p>
-                      <p className="text-sm font-semibold text-ink">
-                        {submission.language?.toUpperCase()}
-                      </p>
-                    </div>
+              <div className="overflow-hidden rounded-2xl border border-ink/10 bg-white/80">
+                <div className="grid grid-cols-[1.2fr_1fr_1fr_1fr_1fr_1fr] gap-2 border-b border-ink/10 bg-white/90 px-4 py-2 text-[11px] uppercase tracking-[0.2em] text-ink/50">
+                  <span>Status</span>
+                  <span>Verdict</span>
+                  <span>Runtime</span>
+                  <span>Memory</span>
+                  <span>Language</span>
+                  <span>Submitted</span>
+                </div>
+                {submissions.slice(0, 6).map((submission: SubmissionItem) => (
+                  <div
+                    key={submission._id}
+                    className="grid grid-cols-[1.2fr_1fr_1fr_1fr_1fr_1fr] gap-2 border-b border-ink/10 px-4 py-3 text-xs"
+                  >
                     <span
-                      className={`rounded-full border px-2.5 py-1 text-xs ${verdictClass(
+                      className={`w-fit rounded-full border px-2 py-0.5 ${statusClass(
+                        submission.status
+                      )}`}
+                    >
+                      {submission.status || "queued"}
+                    </span>
+                    <span
+                      className={`w-fit rounded-full border px-2 py-0.5 ${verdictClass(
                         submission.verdict
                       )}`}
                     >
                       {submission.verdict || "Pending"}
                     </span>
+                    <span>{submission.runtime ? `${submission.runtime}ms` : "-"}</span>
+                    <span>{submission.memory ? `${submission.memory}KB` : "-"}</span>
+                    <span>{submission.language?.toUpperCase()}</span>
+                    <span>{new Date(submission.createdAt).toLocaleString()}</span>
                   </div>
-                  <div className="mt-2 flex flex-wrap gap-3 text-xs text-ink/60">
-                    <span>Status: {submission.status || "queued"}</span>
-                    {submission.runtime ? (
-                      <span>Runtime: {submission.runtime}ms</span>
-                    ) : null}
-                    {submission.memory ? (
-                      <span>Memory: {submission.memory}KB</span>
-                    ) : null}
-                  </div>
-                </div>
-              ))
+                ))}
+              </div>
             ) : (
               <EmptyState
                 title="No submissions yet"
@@ -377,7 +453,7 @@ const InterviewWorkspace = () => {
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-3 border-t border-ink/10 px-4 py-3 text-sm">
-        <Button variant="ghost" onClick={handleRun}>
+        <Button variant="ghost" onClick={handleRun} disabled={isRunning}>
           Run Code
         </Button>
         <Button variant="accent" onClick={handleSubmit} disabled={isSubmitting}>
@@ -388,6 +464,9 @@ const InterviewWorkspace = () => {
         ) : null}
         {isSubmitting ? (
           <span className="text-xs text-ink/60">Queueing...</span>
+        ) : null}
+        {isRunning ? (
+          <span className="text-xs text-ink/60">Running...</span>
         ) : null}
       </div>
     </div>
@@ -405,7 +484,7 @@ const InterviewWorkspace = () => {
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         <Card title="Participants">
           <div className="space-y-2 text-sm">
-            {participants.map((participant) => (
+            {participants.map((participant: { userId: string; name?: string }) => (
               <div key={participant.userId} className="flex items-center gap-2">
                 <span className="flex h-7 w-7 items-center justify-center rounded-full bg-ink text-xs font-semibold text-white">
                   {participant.name?.slice(0, 1).toUpperCase()}
@@ -424,7 +503,7 @@ const InterviewWorkspace = () => {
 
         <Card title="Room activity">
           <div className="space-y-2 text-xs text-ink/60">
-            {activity.map((item, index) => (
+            {activity.map((item: { message: string; timestamp: number }, index: number) => (
               <p key={`${item.timestamp}-${index}`}>{item.message}</p>
             ))}
             {!activity.length && (
@@ -466,39 +545,58 @@ const InterviewWorkspace = () => {
           </button>
         ))}
       </div>
-      {bottomTab === "Testcases" && (
-        <div className="space-y-2 text-xs text-ink/70">
+      {bottomTab === "Output" && (
+        <div className="rounded-2xl bg-ink/5 p-4 text-xs text-ink/70">
+          {runResult?.stdout || latestSubmission?.stdout || output}
+        </div>
+      )}
+      {bottomTab === "Error" && (
+        <div className="rounded-2xl bg-ink/5 p-4 text-xs text-ink/70">
+          {runError || runResult?.stderr || latestSubmission?.stderr || "No errors."}
+        </div>
+      )}
+      {bottomTab === "Test Cases" && (
+        <div className="space-y-3 text-xs text-ink/70">
           {examples.length ? (
-            examples.map((item, index) => (
-              <div key={`${item.input}-${index}`}>
-                <p>Input: {item.input}</p>
-                <p>Expected: {item.output || item.expectedOutput}</p>
-              </div>
-            ))
+            examples.map((item: ExampleCase, index: number) => {
+              const expected = item.output || item.expectedOutput || "";
+              const actual = runResult?.stdout || latestSubmission?.stdout || "";
+              const normalizedActual = normalizeOutput(actual);
+              const normalizedExpected = normalizeOutput(expected);
+              const passed = actual ? normalizedActual === normalizedExpected : null;
+
+              return (
+                <div
+                  key={`${item.input}-${index}`}
+                  className="rounded-2xl border border-ink/10 bg-white/80 p-3"
+                >
+                  <p className="text-ink/60">Input</p>
+                  <p className="mt-1 break-words text-ink">{item.input}</p>
+                  <p className="mt-3 text-ink/60">Expected Output</p>
+                  <p className="mt-1 break-words text-ink">
+                    {expected || "-"}
+                  </p>
+                  <p className="mt-3 text-ink/60">Actual Output</p>
+                  <p className="mt-1 break-words text-ink">
+                    {actual || "Run to see output"}
+                  </p>
+                  {passed !== null ? (
+                    <span
+                      className={`mt-3 inline-flex rounded-full border px-2 py-0.5 ${
+                        passed
+                          ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-700"
+                          : "border-rose-500/20 bg-rose-500/10 text-rose-700"
+                      }`}
+                    >
+                      {passed ? "Pass" : "Fail"}
+                    </span>
+                  ) : null}
+                </div>
+              );
+            })
           ) : (
             <p>No testcases available.</p>
           )}
-        </div>
-      )}
-      {bottomTab === "Output" && (
-        <div className="rounded-2xl bg-ink/5 p-4 text-xs text-ink/70">
-          {latestSubmission?.stdout || output}
-        </div>
-      )}
-      {bottomTab === "Console" && (
-        <div className="rounded-2xl bg-ink/5 p-4 text-xs text-ink/70">
-          {latestSubmission?.stderr
-            ? latestSubmission.stderr
-            : runStatus === "running"
-              ? "Executing..."
-              : "Console logs will appear here."}
-        </div>
-      )}
-      {bottomTab === "Result" && (
-        <div className="rounded-2xl bg-ink/5 p-4 text-xs text-ink/70">
-          {runStatus === "success"
-            ? "Accepted"
-            : "Run or submit to see result."}
         </div>
       )}
     </div>

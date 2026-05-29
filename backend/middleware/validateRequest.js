@@ -229,11 +229,28 @@ const validateSubmissionCreate = (req, res, next) => {
   return next();
 };
 
+const validateSubmissionRun = (req, res, next) => {
+  const { problemId, code, sourceCode, language } = req.body;
+
+  if (!problemId || !(code || sourceCode) || !language) {
+    return res.status(400).json({
+      message: "Problem ID, code, and language are required",
+    });
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(problemId)) {
+    return res.status(400).json({ message: "Invalid problemId format" });
+  }
+
+  return next();
+};
+
 module.exports = {
   validateRegister,
   validateLogin,
   validateProblemCreate,
   validateProblemUpdate,
   validateSubmissionCreate,
+  validateSubmissionRun,
   validateObjectIdParam,
 };
