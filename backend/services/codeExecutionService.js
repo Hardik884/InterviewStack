@@ -59,6 +59,18 @@ const runSubmission = async ({ sourceCode, language, testCase }) => {
     throw new Error("JDoodle credentials are missing");
   }
 
+  if (!sourceCode || !sourceCode.trim()) {
+    return {
+      statusCode: 400,
+      compilationStatus: "1",
+      stdout: "",
+      stderr: "No code provided. Please write some code before running.",
+      time: null,
+      memory: null,
+      passed: false,
+    };
+  }
+
   const leetCodeMessage = detectLeetCodeStyle(language, sourceCode);
   if (leetCodeMessage) {
     console.warn("Compilation failed", { reason: "leetcode-style" });
@@ -75,6 +87,9 @@ const runSubmission = async ({ sourceCode, language, testCase }) => {
 
   console.log("Sending code to JDoodle", {
     language,
+    jdoodleLanguage: mapping.language,
+    versionIndex: mapping.versionIndex,
+    sourceCodeLength: sourceCode.length,
     inputSize: String(testCase.input || "").length,
   });
 
@@ -115,29 +130,43 @@ const runSubmission = async ({ sourceCode, language, testCase }) => {
 
   console.log("JDoodle response received", {
     statusCode: response.data?.statusCode,
+    compilationStatus: response.data?.compilationStatus,
+    outputLength: String(response.data?.output || "").length,
   });
 
   const result = response.data || {};
-  const compilationStatus = String(result.compilationStatus || "0");
-  const stdout = result.output || "";
+
+  // JDoodle returns compilationStatus as a number (0 = success, non-zero = compile error).
+  // When there is a compilation error, JDoodle puts the error text in result.output.
+  // When execution succeeds, result.output is the program's stdout.
+  const compilationStatus = String(result.compilationStatus ?? "0");
+  const isCompileError = compilationStatus !== "0";
+
+  const stdout = isCompileError ? "" : (result.output || "");
+  const stderr = isCompileError
+    ? (result.output || `Compilation error (status: ${compilationStatus})`)
+    : "";
+
   const expected = testCase.expectedOutput || "";
   const normalizedActual = normalizeOutput(stdout);
   const normalizedExpected = normalizeOutput(expected);
-  const passed = normalizedActual === normalizedExpected;
+  // Only mark as passed when there is an expected value to compare against
+  const passed = expected !== "" ? normalizedActual === normalizedExpected : false;
 
-  console.log({
-    actualOutput: stdout,
-    expectedOutput: expected,
-    normalizedActual,
-    normalizedExpected,
-    stderr: compilationStatus !== "0" ? result.compilationStatus : "",
+  console.log("Execution result", {
+    isCompileError,
+    stdoutLength: stdout.length,
+    stderrLength: stderr.length,
+    expectedOutput: expected ? normalizedExpected : "(none)",
+    actualOutput: normalizedActual || "(empty)",
+    passed,
   });
 
   return {
     statusCode: result.statusCode,
     compilationStatus,
     stdout,
-    stderr: compilationStatus !== "0" ? result.compilationStatus : "",
+    stderr,
     time: result.cpuTime ? Number(result.cpuTime) : null,
     memory: parseMemory(result.memory),
     passed,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Editor from "@monaco-editor/react";
 import ReactMarkdown from "react-markdown";
@@ -43,11 +43,31 @@ type SubmissionItem = {
   stderr?: string;
 };
 
+// Separate type for run-only results (never mixed with submit)
 type RunResult = {
-  stdout?: string;
-  stderr?: string;
+  stdout: string;
+  stderr: string;
   runtime?: number | null;
   memory?: number | null;
+};
+
+const normalizeOutput = (value?: string) =>
+  String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+
+const resolveStarterCode = (
+  value: string | Record<string, string> | undefined,
+  lang: string
+): string => {
+  if (!value) {
+    return "// Start coding\n";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  return value[lang] || value.javascript || "// Start coding\n";
 };
 
 const InterviewWorkspace = () => {
@@ -62,14 +82,18 @@ const InterviewWorkspace = () => {
   const [activeTab, setActiveTab] = useState("Description");
   const [bottomTab, setBottomTab] = useState("Output");
   const [bottomOpen, setBottomOpen] = useState(true);
-  const [output, setOutput] = useState("Run code to see output.");
+
+  // Run-only state – never populated by Submit
   const [runResult, setRunResult] = useState<RunResult | null>(null);
-  const [runError, setRunError] = useState("");
+  const [runStatus, setRunStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+
+  // Submit-only status label
+  const [submitStatus, setSubmitStatus] = useState<"idle" | "queuing" | "queued">("idle");
+
   const { data: submissionData } = useSubmissionsByProblem(problemId);
   const submissionMutation = useCreateSubmission();
   const runMutation = useRunSubmission();
   const submissions = (submissionData?.submissions || []) as SubmissionItem[];
-  const latestSubmission = submissions[0];
   const isSubmitting = submissionMutation.isPending;
   const isRunning = runMutation.isPending;
 
@@ -87,20 +111,13 @@ const InterviewWorkspace = () => {
     name: user?.name || "Anonymous",
   });
 
-  const resolveStarterCode = (value: string | Record<string, string> | undefined, lang: string) => {
-    if (!value) {
-      return "// Start coding\n";
-    }
-
-    if (typeof value === "string") {
-      return value;
-    }
-
-    return value[lang] || value.javascript || "// Start coding\n";
-  };
+  // language must be determined BEFORE useCollaborativeEditor so defaultCode uses it.
+  // We initialise language from state here and pass it down.
+  const [selectedLanguage, setSelectedLanguage] = useState("javascript");
 
   const {
     code,
+    codeRef,
     language,
     theme,
     isSaving,
@@ -111,17 +128,23 @@ const InterviewWorkspace = () => {
   } = useCollaborativeEditor({
     roomId,
     problemId,
-    defaultCode: resolveStarterCode(problem?.starterCode, "javascript"),
+    defaultCode: resolveStarterCode(problem?.starterCode, selectedLanguage),
     remoteUpdate,
     sendCodeUpdate,
     updateTyping,
   });
 
+  // Keep selectedLanguage in sync with the editor language
+  const prevLanguageRef = useRef(language);
+  if (prevLanguageRef.current !== language) {
+    prevLanguageRef.current = language;
+    setSelectedLanguage(language);
+  }
+
   const typingLabel = useMemo(() => {
     if (!typingUsers.length) {
       return null;
     }
-
     return `${typingUsers.length} typing`;
   }, [typingUsers.length]);
 
@@ -129,69 +152,105 @@ const InterviewWorkspace = () => {
     if (problem?.examples?.length) {
       return problem.examples;
     }
-
     return problem?.testCases || [];
   }, [problem]) as ExampleCase[];
 
+  // Run: execute current editor code against the first sample input.
+  // Never sets verdict. Never touches submission state.
   const handleRun = () => {
-    if (!problemId) {
-      return;
-    }
+    if (!problemId) return;
 
+    // Use codeRef.current so we always get the exact current editor content,
+    // even if the React state update is still pending.
+    const currentCode = codeRef.current;
+    const currentLanguage = language;
     const sampleInput = examples?.[0]?.input || "";
 
-    setRunError("");
-    setOutput("Running sample input...");
+    setRunResult(null);
+    setRunStatus("running");
     setBottomOpen(true);
     setBottomTab("Output");
 
     runMutation.mutate(
       {
         problemId,
-        sourceCode: code,
-        language,
+        sourceCode: currentCode,
+        language: currentLanguage,
         input: sampleInput,
       },
       {
         onSuccess: (data) => {
-          setRunResult(data?.result || null);
-          setOutput(data?.result?.stdout || "No output.");
+          const result = data?.result;
+          setRunResult({
+            stdout: result?.stdout ?? "",
+            stderr: result?.stderr ?? "",
+            runtime: result?.runtime ?? null,
+            memory: result?.memory ?? null,
+          });
+          setRunStatus("done");
+          // If there were errors, switch to Error tab automatically
+          if (result?.stderr && !result?.stdout) {
+            setBottomTab("Error");
+          }
         },
-        onError: (error) => {
-          setRunResult(null);
-          setRunError(error?.message || "Run failed");
+        onError: (error: Error) => {
+          setRunResult({
+            stdout: "",
+            stderr: error?.message || "Run failed. Check your network connection.",
+            runtime: null,
+            memory: null,
+          });
+          setRunStatus("error");
+          setBottomTab("Error");
         },
       }
     );
   };
 
+  // Submit: enqueue against all test cases. Never sets runResult.
   const handleSubmit = () => {
-    if (!problemId) {
-      return;
-    }
+    if (!problemId) return;
 
-    setOutput("Submission queued. Await verdict.");
+    // Always use codeRef.current for the exact current editor content.
+    const currentCode = codeRef.current;
+    const currentLanguage = language;
+
+    setSubmitStatus("queuing");
     setBottomOpen(true);
+    setBottomTab("Test Cases");
+    setActiveTab("Submissions");
 
-    submissionMutation.mutate({
-      problemId,
-      sourceCode: code,
-      language,
-      roomId,
-    });
+    submissionMutation.mutate(
+      {
+        problemId,
+        sourceCode: currentCode,
+        language: currentLanguage,
+        roomId,
+      },
+      {
+        onSuccess: () => {
+          setSubmitStatus("queued");
+          // Invalidate immediately so the Submissions tab shows the queued entry
+          queryClient.invalidateQueries({ queryKey: ["submissions", problemId] });
+        },
+        onError: () => {
+          setSubmitStatus("idle");
+        },
+      }
+    );
   };
 
   const shareLink = `${window.location.origin}/interview/${roomId}/${problemId}`;
 
+  // Listen for real-time verdict updates over the socket
   useEffect(() => {
     const socket = getSocket();
-    if (!socket) {
-      return;
-    }
+    if (!socket) return;
 
     const handler = (payload: { problemId?: string }) => {
       if (payload?.problemId === problemId) {
         queryClient.invalidateQueries({ queryKey: ["submissions", problemId] });
+        setSubmitStatus("idle");
       }
     };
 
@@ -200,6 +259,17 @@ const InterviewWorkspace = () => {
       socket.off("submission:update", handler);
     };
   }, [problemId, queryClient]);
+
+  // Also poll the query every 3 s while a submission is processing
+  useEffect(() => {
+    const latestSub = submissions[0];
+    if (latestSub?.status === "queued" || latestSub?.status === "processing") {
+      const timer = window.setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ["submissions", problemId] });
+      }, 3000);
+      return () => window.clearTimeout(timer);
+    }
+  }, [submissions, problemId, queryClient]);
 
   const verdictClass = (verdict?: string) => {
     switch (verdict) {
@@ -233,12 +303,6 @@ const InterviewWorkspace = () => {
     }
   };
 
-  const normalizeOutput = (value?: string) =>
-    String(value || "")
-      .replace(/\r\n/g, "\n")
-      .replace(/[ \t]+\n/g, "\n")
-      .trim();
-
   const leftPanel = (
     <div className="flex h-full min-h-0 flex-col">
       <div className="sticky top-0 z-10 border-b border-ink/10 bg-white/95 p-4 backdrop-blur">
@@ -263,11 +327,9 @@ const InterviewWorkspace = () => {
               ))}
             </div>
             <div className="flex flex-wrap gap-2">
-              {(problem?.companyTags || ["Amazon", "Google", "Microsoft"]).map(
-                (tag: string) => (
-                  <Badge key={tag}>{tag}</Badge>
-                )
-              )}
+              {(problem?.companyTags || []).map((tag: string) => (
+                <Badge key={tag}>{tag}</Badge>
+              ))}
             </div>
           </div>
         )}
@@ -412,7 +474,10 @@ const InterviewWorkspace = () => {
           <select
             aria-label="Select language"
             value={language}
-            onChange={(event) => changeLanguage(event.target.value)}
+            onChange={(event) => {
+              setSelectedLanguage(event.target.value);
+              changeLanguage(event.target.value);
+            }}
             className="rounded-full border border-ink/20 bg-white px-3 py-1"
           >
             <option value="javascript">JavaScript</option>
@@ -453,17 +518,19 @@ const InterviewWorkspace = () => {
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-3 border-t border-ink/10 px-4 py-3 text-sm">
-        <Button variant="ghost" onClick={handleRun} disabled={isRunning}>
+        <Button variant="ghost" onClick={handleRun} disabled={isRunning || isSubmitting}>
           Run Code
         </Button>
-        <Button variant="accent" onClick={handleSubmit} disabled={isSubmitting}>
+        <Button variant="accent" onClick={handleSubmit} disabled={isSubmitting || isRunning}>
           Submit Solution
         </Button>
         {typingLabel ? (
           <span className="text-xs text-ink/60">{typingLabel}</span>
         ) : null}
-        {isSubmitting ? (
-          <span className="text-xs text-ink/60">Queueing...</span>
+        {isSubmitting || submitStatus === "queuing" ? (
+          <span className="text-xs text-ink/60">Queuing submission...</span>
+        ) : submitStatus === "queued" ? (
+          <span className="text-xs text-ink/60">Submitted – awaiting verdict...</span>
         ) : null}
         {isRunning ? (
           <span className="text-xs text-ink/60">Running...</span>
@@ -527,6 +594,16 @@ const InterviewWorkspace = () => {
     </div>
   );
 
+  // ── Bottom panel ─────────────────────────────────────────────────────────
+  // Output tab  → Run stdout only (never submission output)
+  // Error tab   → Run stderr / compile errors only (never submission stderr)
+  // Test Cases  → Per-example: input, expected, actual (from run), pass/fail
+
+  const latestCompletedSub = submissions.find((s) => s.status === "completed");
+  const latestPendingSub = submissions.find(
+    (s) => s.status === "queued" || s.status === "processing"
+  );
+
   const bottomPanel = (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2">
@@ -545,41 +622,81 @@ const InterviewWorkspace = () => {
           </button>
         ))}
       </div>
+
+      {/* ── Output tab: stdout from Run only ─────────────────────────── */}
       {bottomTab === "Output" && (
-        <div className="rounded-2xl bg-ink/5 p-4 text-xs text-ink/70">
-          {runResult?.stdout || latestSubmission?.stdout || output}
+        <div className="rounded-2xl bg-ink/5 p-4 font-mono text-xs text-ink/70 whitespace-pre-wrap">
+          {runStatus === "running" ? (
+            <span className="text-ink/50 italic">Running…</span>
+          ) : runStatus === "idle" ? (
+            <span className="text-ink/40 italic">Run code to see output.</span>
+          ) : runResult?.stdout ? (
+            runResult.stdout
+          ) : runStatus === "error" || runResult?.stderr ? (
+            <span className="text-ink/40 italic">No stdout. Check the Error tab.</span>
+          ) : (
+            <span className="text-ink/40 italic">No output produced.</span>
+          )}
         </div>
       )}
+
+      {/* ── Error tab: stderr / compile errors from Run only ─────────── */}
       {bottomTab === "Error" && (
-        <div className="rounded-2xl bg-ink/5 p-4 text-xs text-ink/70">
-          {runError || runResult?.stderr || latestSubmission?.stderr || "No errors."}
+        <div className="rounded-2xl bg-ink/5 p-4 font-mono text-xs text-rose-700/80 whitespace-pre-wrap">
+          {runStatus === "idle" ? (
+            <span className="text-ink/40 italic">Run code to see errors.</span>
+          ) : runResult?.stderr ? (
+            runResult.stderr
+          ) : (
+            <span className="text-ink/40 italic">No errors or compile output.</span>
+          )}
         </div>
       )}
+
+      {/* ── Test Cases tab ────────────────────────────────────────────── */}
       {bottomTab === "Test Cases" && (
         <div className="space-y-3 text-xs text-ink/70">
+          {latestPendingSub && (
+            <div className="rounded-2xl border border-blue-500/20 bg-blue-500/5 p-3 text-blue-700 text-xs">
+              Submission is {latestPendingSub.status}… Verdict will appear in the Submissions tab.
+            </div>
+          )}
           {examples.length ? (
             examples.map((item: ExampleCase, index: number) => {
               const expected = item.output || item.expectedOutput || "";
-              const actual = runResult?.stdout || latestSubmission?.stdout || "";
+              // For Test Cases, show Run output vs expected.
+              // If the user ran code, compare against run result.
+              const actual = runResult?.stdout ?? "";
+              const hasRunResult = runStatus === "done";
               const normalizedActual = normalizeOutput(actual);
               const normalizedExpected = normalizeOutput(expected);
-              const passed = actual ? normalizedActual === normalizedExpected : null;
+              const passed =
+                hasRunResult && expected !== ""
+                  ? normalizedActual === normalizedExpected
+                  : null;
 
               return (
                 <div
                   key={`${item.input}-${index}`}
                   className="rounded-2xl border border-ink/10 bg-white/80 p-3"
                 >
-                  <p className="text-ink/60">Input</p>
-                  <p className="mt-1 break-words text-ink">{item.input}</p>
+                  <p className="font-medium text-ink/50 uppercase tracking-wide text-[10px]">
+                    Test Case {index + 1}
+                  </p>
+                  <p className="mt-2 text-ink/60">Input</p>
+                  <pre className="mt-1 break-words whitespace-pre-wrap text-ink font-mono">
+                    {item.input}
+                  </pre>
                   <p className="mt-3 text-ink/60">Expected Output</p>
-                  <p className="mt-1 break-words text-ink">
+                  <pre className="mt-1 break-words whitespace-pre-wrap text-ink font-mono">
                     {expected || "-"}
-                  </p>
+                  </pre>
                   <p className="mt-3 text-ink/60">Actual Output</p>
-                  <p className="mt-1 break-words text-ink">
-                    {actual || "Run to see output"}
-                  </p>
+                  <pre className="mt-1 break-words whitespace-pre-wrap text-ink font-mono">
+                    {hasRunResult
+                      ? actual || "(empty)"
+                      : "Run code to see output"}
+                  </pre>
                   {passed !== null ? (
                     <span
                       className={`mt-3 inline-flex rounded-full border px-2 py-0.5 ${
@@ -595,7 +712,7 @@ const InterviewWorkspace = () => {
               );
             })
           ) : (
-            <p>No testcases available.</p>
+            <p>No test cases available.</p>
           )}
         </div>
       )}

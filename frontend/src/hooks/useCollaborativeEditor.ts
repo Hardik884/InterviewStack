@@ -23,13 +23,18 @@ export const useCollaborativeEditor = ({
   const [theme, setTheme] = useState("vs-dark");
   const [isSaving, setIsSaving] = useState(false);
   const debounceRef = useRef<number | null>(null);
+  // Always-current ref so that Run/Submit always send the latest code,
+  // regardless of React closure timing.
+  const codeRef = useRef<string>(defaultCode);
 
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
     if (saved) {
       setCode(saved);
+      codeRef.current = saved;
     } else if (defaultCode) {
       setCode(defaultCode);
+      codeRef.current = defaultCode;
     }
   }, [storageKey, defaultCode]);
 
@@ -40,6 +45,7 @@ export const useCollaborativeEditor = ({
 
     if (remoteUpdate.code !== undefined) {
       setCode(remoteUpdate.code);
+      codeRef.current = remoteUpdate.code;
     }
 
     if (remoteUpdate.language) {
@@ -48,11 +54,22 @@ export const useCollaborativeEditor = ({
   }, [remoteUpdate]);
 
   useEffect(() => {
+    codeRef.current = code;
     localStorage.setItem(storageKey, code);
   }, [storageKey, code]);
 
+  // Cleanup debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) {
+        window.clearTimeout(debounceRef.current);
+      }
+    };
+  }, []);
+
   const updateCode = (nextCode: string) => {
     setCode(nextCode);
+    codeRef.current = nextCode;
     updateTyping(true);
     setIsSaving(true);
 
@@ -68,7 +85,7 @@ export const useCollaborativeEditor = ({
 
   const changeLanguage = (nextLanguage: string) => {
     setLanguage(nextLanguage);
-    sendCodeUpdate({ code, language: nextLanguage });
+    sendCodeUpdate({ code: codeRef.current, language: nextLanguage });
   };
 
   const toggleTheme = () => {
@@ -77,11 +94,14 @@ export const useCollaborativeEditor = ({
 
   const resetCode = () => {
     setCode(defaultCode);
+    codeRef.current = defaultCode;
+    localStorage.removeItem(storageKey);
     sendCodeUpdate({ code: defaultCode, language });
   };
 
   return {
     code,
+    codeRef,
     language,
     theme,
     isSaving,

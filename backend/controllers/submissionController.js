@@ -6,10 +6,35 @@ const { getIO } = require("../sockets/socketRegistry");
 const { SUBMISSION_QUEUE_NAME } = require("../queues/constants");
 const { executeRun } = require("../services/codeExecutionService");
 
+/**
+ * Emit a submission event to the room (if any) and directly to the user's socket.
+ */
+const emitToUser = (io, userId, eventName, payload) => {
+  if (!io) return;
+
+  // Room-based broadcast
+  if (payload.roomId) {
+    io.to(payload.roomId).emit(eventName, payload);
+  }
+
+  // Direct-to-user socket broadcast for users not in a room
+  const userIdStr = String(userId);
+  io.sockets.sockets.forEach((socket) => {
+    if (socket.user?.id === userIdStr) {
+      socket.emit(eventName, payload);
+    }
+  });
+};
+
 const createSubmission = async (req, res, next) => {
   try {
     const { problemId, code, sourceCode, language, roomId } = req.body;
-    console.log("Submission API hit", { problemId, language, roomId });
+    const resolvedCode = sourceCode || code || "";
+    console.log("Submission API hit", { problemId, language, roomId, codeLength: resolvedCode.length });
+
+    if (!resolvedCode.trim()) {
+      return res.status(400).json({ message: "Cannot submit empty code" });
+    }
 
     const problem = await Problem.findById(problemId);
     if (!problem) {
@@ -21,8 +46,8 @@ const createSubmission = async (req, res, next) => {
       submittedBy: req.user._id,
       problemId,
       roomId: roomId || "",
-      code: code || sourceCode,
-      sourceCode: sourceCode || code,
+      code: resolvedCode,
+      sourceCode: resolvedCode,
       language,
       verdict: "Pending",
       status: "queued",
@@ -48,20 +73,15 @@ const createSubmission = async (req, res, next) => {
     console.log("Queue counts", counts);
 
     const io = getIO();
-    if (io && submission.roomId) {
-      io.to(submission.roomId).emit("submission:update", {
-        submissionId: submission._id,
-        verdict: "Pending",
-        status: "queued",
-        problemId: String(submission.problemId),
-        userId: String(submission.userId),
-      });
-      console.log("Socket event emitted", {
-        event: "submission:update",
-        submissionId: submission._id,
-        roomId: submission.roomId,
-      });
-    }
+    const eventPayload = {
+      submissionId: String(submission._id),
+      verdict: "Pending",
+      status: "queued",
+      problemId: String(submission.problemId),
+      userId: String(submission.userId),
+      roomId: submission.roomId,
+    };
+    emitToUser(io, req.user._id, "submission:update", eventPayload);
 
     await delCache(`analytics:dashboard:${req.user._id}`);
     await delCache(`analytics:activity:${req.user._id}`);
@@ -79,7 +99,8 @@ const createSubmission = async (req, res, next) => {
 const runSubmission = async (req, res, next) => {
   try {
     const { problemId, code, sourceCode, language, input } = req.body;
-    console.log("Run API hit", { problemId, language });
+    const resolvedCode = sourceCode || code || "";
+    console.log("Run API hit", { problemId, language, codeLength: resolvedCode.length });
 
     const problem = await Problem.findById(problemId);
     if (!problem) {
@@ -92,7 +113,7 @@ const runSubmission = async (req, res, next) => {
     const sampleInput = input || examples?.[0]?.input || "";
 
     const result = await executeRun({
-      sourceCode: sourceCode || code,
+      sourceCode: resolvedCode,
       language,
       input: sampleInput,
     });
