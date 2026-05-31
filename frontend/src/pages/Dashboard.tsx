@@ -2,6 +2,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   Line,
   LineChart,
   Pie,
@@ -11,6 +12,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { motion } from "framer-motion";
 import Card from "../components/ui/Card";
 import StatCard from "../components/ui/StatCard";
 import Skeleton from "../components/ui/Skeleton";
@@ -21,34 +23,30 @@ import { useDashboard } from "../hooks/useDashboard";
 import { useLeaderboard } from "../hooks/useLeaderboard";
 import { formatDate, formatNumber } from "../utils/format";
 
-const buildActivitySeries = (items) => {
+const PIE_COLORS = ["#ff6a3d", "#1d4e89", "#16a34a", "#d97706"];
+
+const buildActivitySeries = (items: Array<{ createdAt: string }>) => {
   const days = 14;
-  const result = [];
-  const counts = new Map();
+  const counts = new Map<string, number>();
   items.forEach((item) => {
-    const dateKey = new Date(item.createdAt).toLocaleDateString("en-US", {
+    const key = new Date(item.createdAt).toLocaleDateString("en-US", {
       month: "short",
       day: "2-digit",
     });
-    counts.set(dateKey, (counts.get(dateKey) || 0) + 1);
+    counts.set(key, (counts.get(key) || 0) + 1);
   });
 
-  for (let i = days - 1; i >= 0; i -= 1) {
+  return Array.from({ length: days }).map((_, i) => {
     const date = new Date();
-    date.setDate(date.getDate() - i);
-    const label = date.toLocaleDateString("en-US", {
-      month: "short",
-      day: "2-digit",
-    });
-    result.push({ date: label, submissions: counts.get(label) || 0 });
-  }
-
-  return result;
+    date.setDate(date.getDate() - (days - i - 1));
+    const label = date.toLocaleDateString("en-US", { month: "short", day: "2-digit" });
+    return { date: label, submissions: counts.get(label) || 0 };
+  });
 };
 
-const buildHeatmap = (items) => {
+const buildHeatmap = (items: Array<{ createdAt: string }>) => {
   const days = 28;
-  const counts = {};
+  const counts: Record<string, number> = {};
   items.forEach((item) => {
     const key = new Date(item.createdAt).toISOString().slice(0, 10);
     counts[key] = (counts[key] || 0) + 1;
@@ -62,6 +60,24 @@ const buildHeatmap = (items) => {
   });
 };
 
+const verdictVariant = (verdict: string) => {
+  const v = (verdict || "").toLowerCase();
+  if (v === "accepted") return "success";
+  if (v === "pending") return "info";
+  if (v.includes("error") || v.includes("wrong")) return "danger";
+  return "default";
+};
+
+const stagger = {
+  hidden: {},
+  visible: { transition: { staggerChildren: 0.07 } },
+};
+
+const fadeUp = {
+  hidden: { opacity: 0, y: 14 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.28, ease: "easeOut" } },
+};
+
 const Dashboard = () => {
   const { data, isLoading } = useDashboard();
   const { data: leaderboardData } = useLeaderboard(5);
@@ -70,76 +86,105 @@ const Dashboard = () => {
   const submissionStats = data?.submissionStats || {};
   const recent = data?.recentActivity || [];
 
-  const difficultyChart = Object.entries(solvedByDifficulty).map(
-    ([key, value]) => ({ name: key, value })
-  );
-  const verdictChart = Object.entries(submissionStats).map(([key, value]) => ({
-    name: key,
+  const difficultyChart = Object.entries(solvedByDifficulty).map(([name, value]) => ({
+    name: String(name).charAt(0).toUpperCase() + String(name).slice(1),
     value,
   }));
-
+  const verdictChart = Object.entries(submissionStats).map(([name, value]) => ({
+    name,
+    value,
+  }));
   const activitySeries = buildActivitySeries(recent);
   const heatmap = buildHeatmap(recent);
+
+  const accuracy = data?.totalSubmissions
+    ? Math.round((data.totalSolved / data.totalSubmissions) * 100)
+    : 0;
 
   return (
     <div className="space-y-8">
       <SectionHeader
-        title="Your performance overview"
-        subtitle="Track daily momentum and system-wide benchmarks."
+        title="Performance overview"
+        subtitle="Track your daily momentum and system-wide benchmarks."
       />
 
+      {/* ── Stats ── */}
       {isLoading ? (
         <div className="grid gap-4 md:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <Card key={`stat-${index}`}>
-              <Skeleton className="h-6 w-24" />
-              <Skeleton className="mt-3 h-8 w-16" />
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Card key={i} animate={false}>
+              <Skeleton className="h-3 w-20 mb-3" />
+              <Skeleton className="h-7 w-12" />
             </Card>
           ))}
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-4">
-          <StatCard
-            title="Total submissions"
-            value={formatNumber(data?.totalSubmissions)}
-            subtitle="All attempts"
-          />
-          <StatCard
-            title="Problems solved"
-            value={formatNumber(data?.totalSolved)}
-            subtitle="Accepted distinct"
-          />
-          <StatCard
-            title="Accuracy"
-            value={`${
-              data?.totalSubmissions
-                ? Math.round((data.totalSolved / data.totalSubmissions) * 100)
-                : 0
-            }%`}
-            subtitle="Solved / attempts"
-          />
-          <StatCard
-            title="Latest verdict"
-            value={recent[0]?.verdict || "-"}
-            subtitle="Most recent"
-          />
-        </div>
+        <motion.div
+          variants={stagger}
+          initial="hidden"
+          animate="visible"
+          className="grid gap-4 sm:grid-cols-2 md:grid-cols-4"
+        >
+          <motion.div variants={fadeUp}>
+            <StatCard
+              index={0}
+              title="Total submissions"
+              value={formatNumber(data?.totalSubmissions)}
+              subtitle="All attempts"
+            />
+          </motion.div>
+          <motion.div variants={fadeUp}>
+            <StatCard
+              index={1}
+              title="Problems solved"
+              value={formatNumber(data?.totalSolved)}
+              subtitle="Distinct accepted"
+              accent
+            />
+          </motion.div>
+          <motion.div variants={fadeUp}>
+            <StatCard
+              index={2}
+              title="Accuracy"
+              value={`${accuracy}%`}
+              subtitle="Accepted / attempts"
+            />
+          </motion.div>
+          <motion.div variants={fadeUp}>
+            <StatCard
+              index={3}
+              title="Latest verdict"
+              value={recent[0]?.verdict || "—"}
+              subtitle="Most recent"
+            />
+          </motion.div>
+        </motion.div>
       )}
 
+      {/* ── Charts row 1 ── */}
       <div className="grid gap-6 xl:grid-cols-[2fr_1fr]">
         <Card title="Submission momentum" subtitle="Last 14 days">
           <div className="h-48">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={activitySeries} margin={{ left: -20 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" tick={{ fontSize: 10 }} />
-                <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
-                <Tooltip />
+              <LineChart data={activitySeries} margin={{ left: -20, right: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(28,26,34,0.06)" />
+                <XAxis dataKey="date" tick={{ fontSize: 10, fill: "rgba(28,26,34,0.4)" }} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: "rgba(28,26,34,0.4)" }} />
+                <Tooltip
+                  contentStyle={{
+                    borderRadius: 12,
+                    border: "1px solid rgba(28,26,34,0.08)",
+                    boxShadow: "0 4px 16px rgba(28,26,34,0.08)",
+                    fontSize: 12,
+                  }}
+                />
                 <Line
                   type="monotone"
                   dataKey="submissions"
                   stroke="#1d4e89"
                   strokeWidth={2}
+                  dot={{ r: 3, fill: "#1d4e89" }}
+                  activeDot={{ r: 5 }}
                 />
               </LineChart>
             </ResponsiveContainer>
@@ -148,29 +193,36 @@ const Dashboard = () => {
 
         <Card title="Leaderboard" subtitle="Top performers">
           <div className="space-y-3">
-            {(leaderboardData?.leaderboard || []).map((entry) => (
-              <div
-                key={entry.userId}
-                className="flex items-center justify-between text-sm"
+            {(leaderboardData?.leaderboard || []).map((entry, i) => (
+              <motion.div
+                key={String(entry.userId)}
+                initial={{ opacity: 0, x: -8 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: i * 0.06 }}
+                className="flex items-center justify-between gap-2 text-sm"
               >
-                <span>
-                  #{entry.rank} {entry.name}
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-xs font-bold text-ink/30 w-5 shrink-0">#{entry.rank}</span>
+                  <span className="font-medium truncate">{entry.name}</span>
+                </div>
+                <span className="shrink-0 rounded-full bg-ink/5 px-2 py-0.5 text-xs font-semibold text-ink/70">
+                  {entry.solvedCount}
                 </span>
-                <span className="font-medium">{entry.solvedCount}</span>
-              </div>
+              </motion.div>
             ))}
             {!leaderboardData?.leaderboard?.length && (
               <EmptyState
                 title="No leaderboard data"
-                description="Solve more problems to climb rankings."
+                description="Solve more problems to appear on the leaderboard."
               />
             )}
           </div>
         </Card>
       </div>
 
+      {/* ── Charts row 2 ── */}
       <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr_1fr]">
-        <Card title="Solved breakdown" subtitle="Accepted by difficulty">
+        <Card title="Solved by difficulty" subtitle="Accepted only">
           <div className="h-44">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
@@ -178,45 +230,57 @@ const Dashboard = () => {
                   data={difficultyChart}
                   dataKey="value"
                   nameKey="name"
-                  innerRadius={35}
-                  outerRadius={65}
-                  fill="#ff6a3d"
+                  innerRadius={38}
+                  outerRadius={68}
+                  paddingAngle={3}
+                >
+                  {difficultyChart.map((_, index) => (
+                    <Cell key={index} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip
+                  contentStyle={{ borderRadius: 10, border: "1px solid rgba(28,26,34,0.08)", fontSize: 12 }}
                 />
-                <Tooltip />
               </PieChart>
             </ResponsiveContainer>
           </div>
         </Card>
 
-        <Card title="Submission stats" subtitle="Verdict distribution">
+        <Card title="Verdict distribution" subtitle="All submissions">
           <div className="h-44">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={verdictChart} margin={{ left: -20 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
-                <Tooltip />
-                <Bar dataKey="value" fill="#1d4e89" radius={[6, 6, 0, 0]} />
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(28,26,34,0.06)" />
+                <XAxis dataKey="name" tick={{ fontSize: 9, fill: "rgba(28,26,34,0.4)" }} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: "rgba(28,26,34,0.4)" }} />
+                <Tooltip
+                  contentStyle={{ borderRadius: 10, border: "1px solid rgba(28,26,34,0.08)", fontSize: 12 }}
+                />
+                <Bar dataKey="value" fill="#1d4e89" radius={[5, 5, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </Card>
 
-        <Card title="Submission heatmap" subtitle="Last 28 days">
-          <div className="grid grid-cols-7 gap-2">
+        <Card title="Activity heatmap" subtitle="Last 28 days">
+          <div className="grid grid-cols-7 gap-1.5">
             {heatmap.map((cell) => {
               const shade =
                 cell.count === 0
-                  ? "bg-ink/10"
+                  ? "bg-ink/8"
                   : cell.count === 1
-                  ? "bg-accent/40"
+                  ? "bg-accent/30"
+                  : cell.count <= 3
+                  ? "bg-accent/60"
                   : "bg-accent";
 
               return (
-                <div
+                <motion.div
                   key={cell.key}
-                  className={`h-6 rounded-md ${shade}`}
-                  title={`${cell.key} · ${cell.count} submissions`}
+                  className={`h-5 rounded ${shade} cursor-default`}
+                  title={`${cell.key} · ${cell.count} submission${cell.count !== 1 ? "s" : ""}`}
+                  whileHover={{ scale: 1.2 }}
+                  transition={{ duration: 0.1 }}
                 />
               );
             })}
@@ -224,29 +288,38 @@ const Dashboard = () => {
         </Card>
       </div>
 
-      <Card title="Recent submissions" subtitle="Latest attempts">
-        <div className="space-y-3">
-          {recent.map((activity) => (
-            <div
-              key={activity._id}
-              className="flex items-center justify-between border-b border-ink/5 pb-3 text-sm last:border-b-0"
-            >
-              <div>
-                <p className="font-medium">{activity.problemId?.title}</p>
-                <p className="text-xs text-ink/60">
-                  {activity.language} · {formatDate(activity.createdAt)}
-                </p>
-              </div>
-              <Badge>{activity.verdict}</Badge>
-            </div>
-          ))}
-          {!recent.length && (
-            <EmptyState
-              title="No submissions yet"
-              description="Start solving problems to see activity here."
-            />
-          )}
-        </div>
+      {/* ── Recent activity ── */}
+      <Card title="Recent submissions" subtitle="Your latest attempts">
+        {recent.length === 0 ? (
+          <EmptyState
+            title="No submissions yet"
+            description="Start solving problems to see your activity here."
+          />
+        ) : (
+          <div className="divide-y divide-ink/5">
+            {recent.map((activity, i) => (
+              <motion.div
+                key={String(activity._id)}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: i * 0.04 }}
+                className="flex items-center justify-between py-3 text-sm first:pt-0 last:pb-0"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-ink truncate">
+                    {activity.problemId?.title || "Unknown problem"}
+                  </p>
+                  <p className="mt-0.5 text-xs text-ink/50">
+                    {activity.language} · {formatDate(activity.createdAt)}
+                  </p>
+                </div>
+                <Badge variant={verdictVariant(activity.verdict)}>
+                  {activity.verdict}
+                </Badge>
+              </motion.div>
+            ))}
+          </div>
+        )}
       </Card>
     </div>
   );

@@ -102,7 +102,7 @@ const getLeaderboard = async (req, res, next) => {
         },
       },
       { $unwind: "$user" },
-      { $project: { _id: 0, userId: "$user._id", name: "$user.name", email: "$user.email", solvedCount: 1 } },
+      { $project: { _id: 0, userId: "$user._id", name: "$user.name", solvedCount: 1 } },
     ]);
 
     const response = {

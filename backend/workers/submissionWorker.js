@@ -1,5 +1,5 @@
 const dotenv = require("dotenv");
-const { Queue, Worker } = require("bullmq");
+const { Worker } = require("bullmq");
 const { bullConnection } = require("../config/redis");
 const connectDB = require("../config/db");
 const Submission = require("../models/Submission");
@@ -7,10 +7,17 @@ const Problem = require("../models/Problem");
 const { executeAgainstTests } = require("../services/codeExecutionService");
 const { SUBMISSION_QUEUE_NAME } = require("../queues/constants");
 
-// Load environment variables for the worker process
 dotenv.config();
 
+/**
+ * Prefer explicit testCases over examples for judging;
+ * fall back to examples when testCases are absent.
+ */
 const pickTestCases = (problem) => {
+  if (problem?.testCases?.length) {
+    return problem.testCases; // { input, expectedOutput }
+  }
+
   if (problem?.examples?.length) {
     return problem.examples.map((item) => ({
       input: item.input,
@@ -18,42 +25,35 @@ const pickTestCases = (problem) => {
     }));
   }
 
-  return problem?.testCases || [];
+  return [];
 };
 
 const startWorker = async () => {
   await connectDB();
-  console.log("Submission worker connected to MongoDB");
+  console.log("[Worker] Submission worker connected to MongoDB");
 
-  const debugQueue = new Queue(SUBMISSION_QUEUE_NAME, {
-    connection: bullConnection,
-  });
-
-  if (process.env.SUBMISSION_DEBUG_DUMMY === "true") {
-    await debugQueue.add("debug", { timestamp: Date.now() });
-    console.log("Debug submission job added");
-  }
-
-  const submissionWorker = new Worker(
+  const worker = new Worker(
     SUBMISSION_QUEUE_NAME,
     async (job) => {
-      console.log("Worker received job", {
-        jobId: job.id,
-        name: job.name,
-      });
+      const { submissionId } = job.data;
 
+      // --- Skip debug jobs ---
       if (job.name === "debug") {
         return { status: "debug-received" };
       }
 
-      const { submissionId } = job.data;
+      if (!submissionId) {
+        throw new Error("Job missing submissionId");
+      }
 
+      // Mark processing
       const submission = await Submission.findById(submissionId);
       if (!submission) {
-        throw new Error("Submission not found");
+        throw new Error(`Submission ${submissionId} not found`);
       }
 
       if (submission.status === "completed") {
+        console.log(`[Worker] Skipping already-completed submission ${submissionId}`);
         return { status: "skipped" };
       }
 
@@ -62,91 +62,124 @@ const startWorker = async () => {
         verdict: "Pending",
       });
 
-      const problem = await Problem.findById(submission.problemId);
+      // Fetch problem
+      const problem = await Problem.findById(submission.problemId).select(
+        "testCases examples"
+      );
       if (!problem) {
-        throw new Error("Problem not found for submission");
+        throw new Error(`Problem ${submission.problemId} not found`);
       }
 
       const testCases = pickTestCases(problem);
       if (!testCases.length) {
-        throw new Error("No test cases available for this problem");
+        // No test cases — mark as a judge error rather than crashing the worker.
+        await Submission.findByIdAndUpdate(submissionId, {
+          status: "completed",
+          verdict: "Judge Error",
+          stderr: "No test cases configured for this problem.",
+        });
+        return { status: "completed", verdict: "Judge Error" };
       }
 
-      const sourceCode = submission.sourceCode || submission.code;
+      const sourceCode = (submission.sourceCode || submission.code || "").trim();
+      if (!sourceCode) {
+        await Submission.findByIdAndUpdate(submissionId, {
+          status: "completed",
+          verdict: "Wrong Answer",
+          stderr: "Empty source code submitted.",
+        });
+        return { status: "completed", verdict: "Wrong Answer" };
+      }
+
       const { results, verdict } = await executeAgainstTests({
         sourceCode,
         language: submission.language,
         testCases,
       });
 
-      const latest = results[results.length - 1] || {};
-      const totalTime = results
-        .map((item) => item.time || 0)
-        .reduce((sum, value) => sum + value, 0);
+      // Aggregate metrics from all test results.
+      const totalRuntimeMs = results.reduce(
+        (sum, r) => sum + (r.time ? Math.round(r.time * 1000) : 0),
+        0
+      );
+      const lastResult = results[results.length - 1] || {};
 
       await Submission.findByIdAndUpdate(submissionId, {
         status: "completed",
         verdict,
-        runtime: latest.time ? Math.round(latest.time * 1000) : null,
-        executionTime: totalTime ? Math.round(totalTime * 1000) : null,
-        memory: latest.memory || null,
-        stdout: latest.stdout || "",
-        stderr: latest.stderr || latest.compileOutput || "",
+        runtime: totalRuntimeMs || null,
+        executionTime: totalRuntimeMs || null,
+        memory: lastResult.memory || null,
+        stdout: lastResult.stdout || "",
+        stderr: lastResult.stderr || lastResult.compileOutput || "",
       });
 
-      console.log("Submission updated", { submissionId, verdict });
-
+      console.log(`[Worker] Submission ${submissionId} → ${verdict}`);
       return { status: "completed", verdict };
     },
     {
       connection: bullConnection,
       concurrency: 2,
+      // Remove completed jobs after 1h, failed after 24h.
+      removeOnComplete: { age: 3600 },
+      removeOnFail: { age: 86400 },
     }
   );
 
-  submissionWorker.on("ready", () => {
-    console.log("Submission worker ready");
-  });
+  worker.on("ready", () => console.log("[Worker] Submission worker ready"));
 
-  submissionWorker.on("active", (job) => {
-    console.log(`Submission job processing: ${job.id}`);
-  });
+  worker.on("active", (job) =>
+    console.log(`[Worker] Processing job ${job.id} — submission ${job.data.submissionId}`)
+  );
 
-  submissionWorker.on("completed", (job, result) => {
-    console.log(`Submission job completed: ${job.id}`, result);
-  });
+  worker.on("completed", (job, result) =>
+    console.log(`[Worker] Job ${job.id} completed`, result)
+  );
 
-  submissionWorker.on("failed", async (job, error) => {
-    console.error(`Submission job failed: ${job?.id}`, error.stack || error.message);
+  worker.on("failed", async (job, error) => {
+    console.error(`[Worker] Job ${job?.id} failed:`, error.message);
 
     if (job?.data?.submissionId) {
-      await Submission.findByIdAndUpdate(job.data.submissionId, {
-        status: "failed",
-        verdict: "Runtime Error",
-        stderr: error.message,
-      });
-
+      try {
+        await Submission.findByIdAndUpdate(job.data.submissionId, {
+          status: "failed",
+          verdict: "Runtime Error",
+          stderr: error.message,
+        });
+      } catch (updateErr) {
+        console.error("[Worker] Failed to update submission after job failure:", updateErr.message);
+      }
     }
   });
 
-  submissionWorker.on("stalled", (jobId) => {
-    console.warn(`Submission job stalled: ${jobId}`);
-  });
+  worker.on("stalled", (jobId) =>
+    console.warn(`[Worker] Job ${jobId} stalled`)
+  );
 
-  submissionWorker.on("error", (error) => {
-    console.error("Submission worker error:", error.stack || error.message);
-  });
+  worker.on("error", (error) =>
+    console.error("[Worker] Worker error:", error.message)
+  );
+
+  // Graceful shutdown
+  const shutdown = async (signal) => {
+    console.log(`[Worker] Received ${signal}, shutting down gracefully…`);
+    await worker.close();
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT",  () => shutdown("SIGINT"));
 
   process.on("unhandledRejection", (reason) => {
-    console.error("Unhandled rejection in submission worker:", reason);
+    console.error("[Worker] Unhandled rejection:", reason);
   });
 
   process.on("uncaughtException", (error) => {
-    console.error("Uncaught exception in submission worker:", error.stack || error.message);
+    console.error("[Worker] Uncaught exception:", error.stack || error.message);
   });
 };
 
 startWorker().catch((error) => {
-  console.error("Failed to start submission worker:", error.message);
+  console.error("[Worker] Failed to start:", error.message);
   process.exit(1);
 });

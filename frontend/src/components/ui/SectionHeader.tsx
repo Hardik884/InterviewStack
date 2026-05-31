@@ -10,12 +10,12 @@ const SectionHeader = ({ title, subtitle, action }: SectionHeaderProps) => {
   return (
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h2 className="text-xl font-semibold text-ink">{title}</h2>
+        <h1 className="text-xl font-bold tracking-tight text-ink">{title}</h1>
         {subtitle ? (
-          <p className="mt-1 text-sm text-ink/60">{subtitle}</p>
+          <p className="mt-1 text-sm text-ink/50">{subtitle}</p>
         ) : null}
       </div>
-      {action ? <div>{action}</div> : null}
+      {action ? <div className="flex items-center gap-2">{action}</div> : null}
     </div>
   );
 };

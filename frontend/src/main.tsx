@@ -12,11 +12,18 @@ const queryClient = new QueryClient({
     queries: {
       retry: 1,
       refetchOnWindowFocus: false,
+      staleTime: 30_000, // 30s stale time to reduce redundant refetches
+    },
+    mutations: {
+      retry: 0,
     },
   },
 });
 
-createRoot(document.getElementById("root")!).render(
+const root = document.getElementById("root");
+if (!root) throw new Error("Root element not found");
+
+createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
@@ -24,7 +31,26 @@ createRoot(document.getElementById("root")!).render(
           <App />
         </BrowserRouter>
       </AuthProvider>
-      <Toaster position="top-right" toastOptions={{ duration: 3000 }} />
+      <Toaster
+        position="top-right"
+        toastOptions={{
+          duration: 3500,
+          style: {
+            background: "#1c1a22",
+            color: "#f6f4ef",
+            fontSize: "13px",
+            fontFamily: "'Space Grotesk', system-ui, sans-serif",
+            borderRadius: "12px",
+            padding: "10px 14px",
+          },
+          success: {
+            iconTheme: { primary: "#10b981", secondary: "#f6f4ef" },
+          },
+          error: {
+            iconTheme: { primary: "#f43f5e", secondary: "#f6f4ef" },
+          },
+        }}
+      />
     </QueryClientProvider>
   </StrictMode>
 );

@@ -1,6 +1,7 @@
+import { motion } from "framer-motion";
 import DifficultyBadge from "./DifficultyBadge";
-import StatusPill from "./StatusPill";
 import TagChip from "./TagChip";
+import Button from "./ui/Button";
 
 type ProblemRowProps = {
   problem: {
@@ -11,45 +12,57 @@ type ProblemRowProps = {
     tags?: string[];
     createdAt: string;
   };
-  onStart: (problem) => void;
+  onStart: (problem: ProblemRowProps["problem"]) => void;
 };
 
 const ProblemRow = ({ problem, onStart }: ProblemRowProps) => {
+  const preview = problem.description
+    ? problem.description.length > 130
+      ? `${problem.description.slice(0, 130)}…`
+      : problem.description
+    : "";
+
   return (
-    <div className="rounded-3xl border border-ink/10 bg-white/90 p-4 shadow-soft transition hover:border-ink/20">
+    <motion.div
+      className="rounded-3xl border border-ink/8 bg-white/95 p-4 shadow-soft transition-shadow hover:shadow-md hover:border-ink/15"
+      whileHover={{ y: -1 }}
+      transition={{ duration: 0.15 }}
+    >
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <p className="text-base font-semibold text-ink">{problem.title}</p>
-          <p className="mt-1 text-xs text-ink/60">
-            {problem.description?.slice(0, 140)}...
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {(problem.tags || []).map((tag) => (
-              <TagChip key={tag} label={tag} />
-            ))}
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-base font-semibold text-ink">{problem.title}</p>
+            <DifficultyBadge value={problem.difficulty} />
           </div>
-          <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-ink/60">
-            <span>Acceptance: 42%</span>
-            <span>Added {new Date(problem.createdAt).toLocaleDateString()}</span>
-            <div className="flex gap-2">
-              <TagChip label="Amazon" />
-              <TagChip label="Google" />
+          {preview && (
+            <p className="mt-1.5 text-xs text-ink/55 leading-relaxed">{preview}</p>
+          )}
+          {problem.tags?.length ? (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {problem.tags.map((tag) => (
+                <TagChip key={tag} label={tag} />
+              ))}
             </div>
+          ) : null}
+          <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-ink/40">
+            <span>Added {new Date(problem.createdAt).toLocaleDateString()}</span>
           </div>
-          <button
-            type="button"
-            className="mt-4 rounded-full border border-ink/20 px-3 py-1 text-xs text-ink hover:bg-ink/5"
-            onClick={() => onStart(problem)}
-          >
-            Start interview session
-          </button>
         </div>
-        <div className="flex items-center gap-2">
-          <DifficultyBadge value={problem.difficulty} />
-          <StatusPill label="Unattempted" />
+
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={(e) => {
+              e.stopPropagation();
+              onStart(problem);
+            }}
+          >
+            Start session
+          </Button>
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 };
 
