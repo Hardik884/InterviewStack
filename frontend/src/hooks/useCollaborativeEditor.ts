@@ -1,4 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+/**
+ * useCollaborativeEditor.ts — Production-grade collaborative editor hook.
+ *
+ * Key fixes over original:
+ *   - Feedback-loop eliminated: isRemoteUpdateRef gates sendCodeUpdate
+ *     so we never echo a remote edit back to the server.
+ *   - remoteUpdate identity check: only apply if code/language actually differ.
+ *   - applyRemoteSnapshot: explicit method for room:snapshot rehydration.
+ *   - Debounce reduced to 150ms for snappier feel.
+ *   - Language stored separately from code; changeLanguage uses sendLanguageChange.
+ *   - editorRef exposed for cursor decoration consumers.
+ */
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import type * as Monaco from "monaco-editor";
 
 type CollaborativeEditorArgs = {
   roomId: string;
@@ -6,6 +20,7 @@ type CollaborativeEditorArgs = {
   defaultCode?: string;
   remoteUpdate?: { code?: string; language?: string } | null;
   sendCodeUpdate: (payload: { code: string; language: string }) => void;
+  sendLanguageChange?: (language: string) => void;
   updateTyping: (isTyping: boolean) => void;
 };
 
@@ -15,89 +30,161 @@ export const useCollaborativeEditor = ({
   defaultCode = "// Start coding\n",
   remoteUpdate,
   sendCodeUpdate,
+  sendLanguageChange,
   updateTyping,
 }: CollaborativeEditorArgs) => {
   const storageKey = `interview:${roomId}:${problemId}`;
-  const [code, setCode] = useState(defaultCode);
-  const [language, setLanguage] = useState("javascript");
-  const [theme, setTheme] = useState("vs-dark");
-  const [isSaving, setIsSaving] = useState(false);
-  const debounceRef = useRef<number | null>(null);
-  // Always-current ref so that Run/Submit always send the latest code,
-  // regardless of React closure timing.
-  const codeRef = useRef<string>(defaultCode);
+  const langStorageKey = `interview:${roomId}:${problemId}:lang`;
 
-  useEffect(() => {
+  const [code, setCode] = useState<string>(() => {
     const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      setCode(saved);
-      codeRef.current = saved;
-    } else if (defaultCode) {
-      setCode(defaultCode);
-      codeRef.current = defaultCode;
-    }
-  }, [storageKey, defaultCode]);
+    return saved ?? defaultCode;
+  });
+  const [language, setLanguage] = useState<string>(() => {
+    return localStorage.getItem(langStorageKey) ?? "javascript";
+  });
+  const [theme, setTheme] = useState<"vs-dark" | "light">("vs-dark");
+  const [isSaving, setIsSaving] = useState(false);
 
-  useEffect(() => {
-    if (!remoteUpdate) {
-      return;
-    }
+  // Always-current ref — used by Run/Submit to avoid stale closure.
+  const codeRef = useRef<string>(code);
 
-    if (remoteUpdate.code !== undefined) {
-      setCode(remoteUpdate.code);
-      codeRef.current = remoteUpdate.code;
-    }
+  // ── Feedback loop guard ───────────────────────────────────────────────────
+  // When we apply a remote update we set this flag so that the editor's
+  // onChange callback knows not to emit a code:sync back to the server.
+  const isRemoteUpdateRef = useRef(false);
 
-    if (remoteUpdate.language) {
-      setLanguage(remoteUpdate.language);
-    }
-  }, [remoteUpdate]);
+  // Debounce ref for outgoing code sync.
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Monaco editor instance ref (set via onMount).
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+
+  // ── Persist localStorage ──────────────────────────────────────────────────
   useEffect(() => {
     codeRef.current = code;
     localStorage.setItem(storageKey, code);
   }, [storageKey, code]);
 
-  // Cleanup debounce timer on unmount
+  useEffect(() => {
+    localStorage.setItem(langStorageKey, language);
+  }, [langStorageKey, language]);
+
+  // ── Apply remote update (code:update / language_changed) ──────────────────
+  useEffect(() => {
+    if (!remoteUpdate) return;
+
+    let changed = false;
+
+    if (remoteUpdate.code !== undefined && remoteUpdate.code !== codeRef.current) {
+      // Mark as remote before setting so onChange skips the emit.
+      isRemoteUpdateRef.current = true;
+      setCode(remoteUpdate.code);
+      codeRef.current = remoteUpdate.code;
+      changed = true;
+    }
+
+    if (remoteUpdate.language && remoteUpdate.language !== language) {
+      setLanguage(remoteUpdate.language);
+      changed = true;
+    }
+
+    if (changed) {
+      // Allow one render cycle then clear the flag.
+      // (Monaco's onChange fires synchronously in the same tick on value prop change,
+      // but we give a micro-task margin for safety.)
+      setTimeout(() => {
+        isRemoteUpdateRef.current = false;
+      }, 0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remoteUpdate]);
+
+  // ── Cleanup ───────────────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
-      if (debounceRef.current) {
-        window.clearTimeout(debounceRef.current);
-      }
+      if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, []);
 
-  const updateCode = (nextCode: string) => {
-    setCode(nextCode);
-    codeRef.current = nextCode;
-    updateTyping(true);
-    setIsSaving(true);
+  // ── applyRemoteSnapshot ───────────────────────────────────────────────────
+  /**
+   * Called when the server sends room:snapshot on (re)join.
+   * Directly sets editor content without emitting back to the server.
+   */
+  const applyRemoteSnapshot = useCallback(
+    (snapshotCode: string, snapshotLanguage: string) => {
+      isRemoteUpdateRef.current = true;
+      setCode(snapshotCode);
+      codeRef.current = snapshotCode;
+      setLanguage(snapshotLanguage);
+      setTimeout(() => {
+        isRemoteUpdateRef.current = false;
+      }, 0);
+    },
+    []
+  );
 
-    if (debounceRef.current) {
-      window.clearTimeout(debounceRef.current);
-    }
+  // ── updateCode (called from Monaco onChange) ──────────────────────────────
+  const updateCode = useCallback(
+    (nextCode: string) => {
+      // If this change originated from a remote update we just applied,
+      // do NOT emit it back — that would create an echo loop.
+      if (isRemoteUpdateRef.current) {
+        isRemoteUpdateRef.current = false;
+        return;
+      }
 
-    debounceRef.current = window.setTimeout(() => {
-      sendCodeUpdate({ code: nextCode, language });
-      setIsSaving(false);
-    }, 250);
-  };
+      setCode(nextCode);
+      codeRef.current = nextCode;
+      updateTyping(true);
+      setIsSaving(true);
 
-  const changeLanguage = (nextLanguage: string) => {
-    setLanguage(nextLanguage);
-    sendCodeUpdate({ code: codeRef.current, language: nextLanguage });
-  };
+      if (debounceRef.current) clearTimeout(debounceRef.current);
 
-  const toggleTheme = () => {
+      debounceRef.current = setTimeout(() => {
+        sendCodeUpdate({ code: nextCode, language });
+        setIsSaving(false);
+      }, 150);
+    },
+    [language, sendCodeUpdate, updateTyping]
+  );
+
+  // ── changeLanguage ────────────────────────────────────────────────────────
+  const changeLanguage = useCallback(
+    (nextLanguage: string) => {
+      setLanguage(nextLanguage);
+      // Emit language-only change event (preferred) or fall back to code sync.
+      if (sendLanguageChange) {
+        sendLanguageChange(nextLanguage);
+      } else {
+        sendCodeUpdate({ code: codeRef.current, language: nextLanguage });
+      }
+    },
+    [sendCodeUpdate, sendLanguageChange]
+  );
+
+  // ── toggleTheme ───────────────────────────────────────────────────────────
+  const toggleTheme = useCallback(() => {
     setTheme((prev) => (prev === "vs-dark" ? "light" : "vs-dark"));
-  };
+  }, []);
 
-  const resetCode = () => {
+  // ── resetCode ─────────────────────────────────────────────────────────────
+  const resetCode = useCallback(() => {
+    isRemoteUpdateRef.current = false;
     setCode(defaultCode);
     codeRef.current = defaultCode;
     localStorage.removeItem(storageKey);
     sendCodeUpdate({ code: defaultCode, language });
-  };
+  }, [defaultCode, language, sendCodeUpdate, storageKey]);
+
+  // ── onMount ───────────────────────────────────────────────────────────────
+  const handleEditorMount = useCallback(
+    (editor: Monaco.editor.IStandaloneCodeEditor) => {
+      editorRef.current = editor;
+    },
+    []
+  );
 
   return {
     code,
@@ -105,9 +192,12 @@ export const useCollaborativeEditor = ({
     language,
     theme,
     isSaving,
+    editorRef,
     updateCode,
     changeLanguage,
     toggleTheme,
     resetCode,
+    applyRemoteSnapshot,
+    handleEditorMount,
   };
 };

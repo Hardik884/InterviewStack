@@ -1,5 +1,6 @@
 import axios from "axios";
 import { API_BASE_URL } from "../utils/constants";
+import { disconnectSocket } from "../sockets/socketClient";
 import { clearToken, clearStoredUser, getToken } from "../utils/storage";
 
 const api = axios.create({
@@ -23,6 +24,7 @@ api.interceptors.response.use(
     if (error.response?.status === 401) {
       clearToken();
       clearStoredUser();
+      disconnectSocket();
       // Only redirect if not already on an auth page.
       if (!window.location.pathname.startsWith("/login") &&
           !window.location.pathname.startsWith("/register")) {

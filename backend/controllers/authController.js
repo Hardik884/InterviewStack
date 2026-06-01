@@ -102,4 +102,19 @@ const loginUser = async (req, res, next) => {
   }
 };
 
-module.exports = { registerUser, loginUser };
+/**
+ * GET /api/auth/me
+ * Returns the current user from the verified JWT.
+ */
+const getCurrentUser = async (req, res) => {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
+  return res.status(200).json({
+    user: { id: user._id, name: user.name, email: user.email },
+  });
+};
+
+module.exports = { registerUser, loginUser, getCurrentUser };

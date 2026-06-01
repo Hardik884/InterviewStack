@@ -1,5 +1,6 @@
 import { createContext, useEffect, useMemo, useState } from "react";
-import { loginUser, registerUser } from "../services/authService";
+import { getCurrentUser, loginUser, registerUser } from "../services/authService";
+import { disconnectSocket } from "../sockets/socketClient";
 import {
   getToken,
   setToken,
@@ -17,11 +18,66 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Hydrate stored auth state on first render.
-    setLoading(false);
+    let isActive = true;
+
+    const hydrate = async () => {
+      if (!token) {
+        if (isActive) {
+          setUser(null);
+          setLoading(false);
+        }
+        return;
+      }
+
+      setLoading(true);
+
+      try {
+        const data = await getCurrentUser();
+        if (!isActive) return;
+        const resolvedUser = data?.user ?? data;
+        setStoredUser(resolvedUser);
+        setUser(resolvedUser);
+      } catch (error) {
+        if (!isActive) return;
+        clearToken();
+        clearStoredUser();
+        setTokenState(null);
+        setUser(null);
+      } finally {
+        if (isActive) setLoading(false);
+      }
+    };
+
+    hydrate();
+
+    return () => {
+      isActive = false;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    const handleStorage = (event) => {
+      if (event.key !== "auth_token") return;
+      const sessionToken = sessionStorage.getItem("auth_token");
+      const nextToken = event.newValue;
+
+      if (!sessionToken) return;
+
+      if (!nextToken || nextToken !== sessionToken) {
+        sessionStorage.removeItem("auth_token");
+        sessionStorage.removeItem("auth_user");
+        setTokenState(null);
+        setUser(null);
+        disconnectSocket();
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
   }, []);
 
   const handleAuthSuccess = (data) => {
+    disconnectSocket();
     setToken(data.token);
     setStoredUser(data.user);
     setTokenState(data.token);
@@ -43,6 +99,7 @@ export const AuthProvider = ({ children }) => {
     clearStoredUser();
     setTokenState(null);
     setUser(null);
+    disconnectSocket();
   };
 
   const value = useMemo(
