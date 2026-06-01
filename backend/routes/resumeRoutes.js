@@ -1,7 +1,9 @@
 const express = require("express");
+const crypto = require("crypto");
 const multer = require("multer");
 const path = require("path");
 const { protect } = require("../middleware/authMiddleware");
+const { ensureDirectorySync, resolveResumeUploadPath } = require("../config/uploads");
 const {
   uploadResume,
   getResumeHistory,
@@ -16,25 +18,50 @@ const maxFileSizeMb = Math.max(
   parseInt(process.env.RESUME_MAX_FILE_MB, 10) || 5,
   1
 );
+const maxFilenameLength = Math.max(
+  parseInt(process.env.RESUME_MAX_FILENAME_LENGTH, 10) || 120,
+  30
+);
+
+const isPdfUpload = (file) => {
+  const ext = path.extname(file.originalname).toLowerCase();
+  return file.mimetype === "application/pdf" && ext === ".pdf";
+};
+
+const buildSafeFilename = () => {
+  const timestamp = Date.now();
+  const randomSuffix = crypto.randomBytes(8).toString("hex");
+  return `resume-${timestamp}-${randomSuffix}.pdf`;
+};
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, "..", "uploads", "resumes"));
+    try {
+      const uploadPath = resolveResumeUploadPath();
+      ensureDirectorySync(uploadPath);
+      cb(null, uploadPath);
+    } catch (error) {
+      cb(error);
+    }
   },
   filename: (req, file, cb) => {
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    const ext = path.extname(file.originalname).toLowerCase();
-    cb(null, `${file.fieldname}-${uniqueSuffix}${ext}`);
+    cb(null, buildSafeFilename());
   },
 });
 
 const fileFilter = (req, file, cb) => {
-  const isPdf =
-    file.mimetype === "application/pdf" ||
-    path.extname(file.originalname).toLowerCase() === ".pdf";
+  if (file.originalname && file.originalname.length > maxFilenameLength) {
+    const error = new Error("Filename is too long");
+    error.statusCode = 400;
+    return cb(error);
+  }
+
+  const isPdf = isPdfUpload(file);
 
   if (!isPdf) {
-    return cb(new Error("Only PDF files are allowed"));
+    const error = new Error("Only PDF files are allowed");
+    error.statusCode = 400;
+    return cb(error);
   }
 
   return cb(null, true);
@@ -43,7 +70,11 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: maxFileSizeMb * 1024 * 1024 },
+  limits: {
+    fileSize: maxFileSizeMb * 1024 * 1024,
+    files: 1,
+    fieldNameSize: 100,
+  },
 });
 
 // POST /api/resume/upload

@@ -5,6 +5,7 @@ const connectDB = require("./config/db");
 const initSocket = require("./sockets/socketHandler");
 const { connectRedis } = require("./config/redis");
 const { registerSubmissionQueueEvents } = require("./services/submissionQueueEvents");
+const { ensureUploadDirectories } = require("./config/uploads");
 
 // Load environment variables from .env
 dotenv.config();
@@ -19,6 +20,8 @@ const startServer = async () => {
     } catch (redisError) {
       console.error("Redis connection failed:", redisError.message);
     }
+
+    await ensureUploadDirectories();
     const server = http.createServer(app);
     const io = initSocket(server);
     registerSubmissionQueueEvents(io);

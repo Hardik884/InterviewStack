@@ -36,6 +36,18 @@ const errorHandler = (err, req, res, _next) => {
     return res.status(401).json({ message: "Token expired" });
   }
 
+  if (err.name === "MulterError") {
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ message: "Resume file is too large" });
+    }
+    if (err.code === "LIMIT_FILE_COUNT" || err.code === "LIMIT_UNEXPECTED_FILE") {
+      return res.status(400).json({ message: "Only one resume file is allowed" });
+    }
+    if (err.code === "LIMIT_FIELD_KEY" || err.code === "LIMIT_FIELD_VALUE") {
+      return res.status(400).json({ message: "Upload metadata is invalid" });
+    }
+  }
+
   const statusCode = err.statusCode || err.status || 500;
   const message =
     statusCode === 500 && process.env.NODE_ENV === "production"
