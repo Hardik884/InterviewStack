@@ -1,7 +1,7 @@
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const { registerRoomHandlers } = require("./roomHandlers");
-const { registerCodeHandlers } = require("./codeHandlers");
+const { registerYjsHandlers, initRedisPubSub } = require("./yjsHandlers");
 const { setIO } = require("./socketRegistry");
 
 const initSocket = (httpServer) => {
@@ -18,8 +18,8 @@ const initSocket = (httpServer) => {
     pingInterval: 25000,
     // Allow WebSocket with polling fallback for restrictive networks.
     transports: ["websocket", "polling"],
-    // Maximum buffer before disconnect (prevents slow-client memory growth)
-    maxHttpBufferSize: 1e6, // 1 MB
+    // Yjs binary updates can be larger — 5 MB max buffer.
+    maxHttpBufferSize: 5e6,
   });
 
   // ── JWT authentication middleware ─────────────────────────────────────────
@@ -28,22 +28,15 @@ const initSocket = (httpServer) => {
       const token = socket.handshake.auth?.token;
       const secret = process.env.JWT_SECRET;
 
-      if (!token) {
-        return next(new Error("Authentication token missing"));
-      }
-
+      if (!token) return next(new Error("Authentication token missing"));
       if (!secret) {
         console.error("[Socket] JWT_SECRET not configured");
         return next(new Error("Server misconfiguration"));
       }
 
       const decoded = jwt.verify(token, secret);
+      if (!decoded.id) return next(new Error("Token payload invalid"));
 
-      if (!decoded.id) {
-        return next(new Error("Token payload invalid"));
-      }
-
-      // Attach user info to the socket for use in handlers.
       socket.user = {
         id: String(decoded.id),
         name: decoded.name || "Anonymous",
@@ -60,7 +53,7 @@ const initSocket = (httpServer) => {
     console.log(`[Socket] Connected: ${socket.id} (user ${socket.user.id})`);
 
     registerRoomHandlers(io, socket);
-    registerCodeHandlers(io, socket);
+    registerYjsHandlers(io, socket);   // ← Yjs CRDT handlers (replaces registerCodeHandlers)
 
     socket.on("disconnect", (reason) => {
       console.log(`[Socket] Disconnected: ${socket.id} (user ${socket.user.id}) — ${reason}`);
@@ -72,6 +65,10 @@ const initSocket = (httpServer) => {
   });
 
   setIO(io);
+
+  // ── Redis Pub/Sub for multi-instance Yjs propagation ─────────────────────
+  initRedisPubSub(io);
+
   return io;
 };
 

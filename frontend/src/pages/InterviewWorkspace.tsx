@@ -1,3 +1,16 @@
+/**
+ * InterviewWorkspace.tsx — Yjs CRDT collaborative editor workspace.
+ *
+ * Editor synchronisation is now fully handled by Yjs via useYjsEditor.
+ * Monaco is driven as an uncontrolled editor — MonacoBinding owns content.
+ *
+ * Legacy removed:
+ *   - useCollaborativeEditor (debounce, isRemoteUpdateRef, sendCodeUpdate)
+ *   - useCursorPresence (cursor:move, selection:change socket events)
+ *   - remoteUpdate, applyRemoteSnapshot, snapshotRef wiring
+ *   - Monaco value/onChange props (now uncontrolled via MonacoBinding)
+ */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Editor from "@monaco-editor/react";
@@ -18,14 +31,13 @@ import PresenceSidebar from "../components/workspace/PresenceSidebar";
 import { useAuth } from "../hooks/useAuth";
 import { useProblem } from "../hooks/useProblem";
 import { useInterviewRoom } from "../hooks/useInterviewRoom";
-import { useCollaborativeEditor } from "../hooks/useCollaborativeEditor";
-import { useCursorPresence } from "../hooks/useCursorPresence";
+import { useYjsEditor } from "../hooks/useYjsEditor";
 import { useConnectionStatus } from "../hooks/useConnectionStatus";
 import { useSubmissionsByProblem } from "../hooks/useSubmissionsByProblem";
 import { useCreateSubmission } from "../hooks/useCreateSubmission";
 import { useRunSubmission } from "../hooks/useRunSubmission";
 import { getSocket } from "../sockets/socketClient";
-import type { RoomSnapshot } from "../hooks/useInterviewRoom";
+import type * as Monaco from "monaco-editor";
 
 const tabList = ["Description", "Hints", "Discussion", "Submissions"];
 const outputTabs = ["Output", "Error", "Test Cases"];
@@ -80,60 +92,43 @@ const InterviewWorkspace = () => {
   const { data, isLoading } = useProblem(problemId);
   const problem = data?.problem;
 
-  const [activeTab, setActiveTab] = useState("Description");
-  const [bottomTab, setBottomTab] = useState("Output");
+  const [activeTab, setActiveTab]   = useState("Description");
+  const [bottomTab, setBottomTab]   = useState("Output");
   const [bottomOpen, setBottomOpen] = useState(true);
 
-  const [runResult, setRunResult] = useState<RunResult | null>(null);
-  const [runStatus, setRunStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [runResult, setRunResult]     = useState<RunResult | null>(null);
+  const [runStatus, setRunStatus]     = useState<"idle" | "running" | "done" | "error">("idle");
   const [submitStatus, setSubmitStatus] = useState<"idle" | "queuing" | "queued">("idle");
 
   const { data: submissionData } = useSubmissionsByProblem(problemId);
   const submissionMutation = useCreateSubmission();
-  const runMutation = useRunSubmission();
-  const submissions = (submissionData?.submissions || []) as SubmissionItem[];
-  const isSubmitting = submissionMutation.isPending;
-  const isRunning = runMutation.isPending;
+  const runMutation        = useRunSubmission();
+  const submissions        = (submissionData?.submissions || []) as SubmissionItem[];
+  const isSubmitting       = submissionMutation.isPending;
+  const isRunning          = runMutation.isPending;
 
-  // ── Determine user ID for presence (self-identification) ─────────────────
+  // ── User identity ─────────────────────────────────────────────────────────
   const myUserId = useMemo(
-    () => (user as Record<string, string> | null)?._id ?? (user as Record<string, string> | null)?.id ?? "",
+    () =>
+      (user as Record<string, string> | null)?._id ??
+      (user as Record<string, string> | null)?.id ??
+      "",
     [user]
   );
 
-  // ── Determine role ────────────────────────────────────────────────────────
-  // Simple heuristic: if the URL was navigated from the Rooms page the user
-  // is the host/interviewer; otherwise candidate. Can be extended with proper
-  // role passing via route state.
+  // ── Role ──────────────────────────────────────────────────────────────────
   const role = useMemo<"interviewer" | "candidate">(() => {
     const stored = sessionStorage.getItem(`room:${roomId}:role`);
     if (stored === "interviewer" || stored === "host") return "interviewer";
     return "candidate";
   }, [roomId]);
 
-  // ── Snapshot handler ───────────────────────────────────────────────────────
-  // Called when server sends room:snapshot — used to rehydrate editor state.
-  const snapshotRef = useRef<((snap: RoomSnapshot) => void) | null>(null);
-  const onSnapshot = useCallback((snap: RoomSnapshot) => {
-    snapshotRef.current?.(snap);
-  }, []);
-
-  // ── Room presence ─────────────────────────────────────────────────────────
-  const {
-    participants,
-    typingUsers,
-    activity,
-    connectionStatus: roomConnectionStatus,
-    remoteUpdate,
-    sendCodeUpdate,
-    sendLanguageChange,
-    updateTyping,
-  } = useInterviewRoom({
+  // ── Room presence (participants, activity, connection status) ─────────────
+  const { participants, activity, connectionStatus: roomConnectionStatus } = useInterviewRoom({
     token,
     roomId,
     name: user?.name || "Anonymous",
     role,
-    onSnapshot,
   });
 
   // ── Connection status (for banner) ────────────────────────────────────────
@@ -141,56 +136,42 @@ const InterviewWorkspace = () => {
     socket: getSocket() ?? undefined,
   });
 
-  // ── Collaborative editor ──────────────────────────────────────────────────
+  // ── Yjs CRDT editor ───────────────────────────────────────────────────────
+  const defaultCode = resolveStarterCode(problem?.starterCode, "javascript");
+
   const {
-    code,
-    codeRef,
-    language,
-    theme,
-    isSaving,
     editorRef,
-    updateCode,
-    changeLanguage,
+    language,
+    setLanguage,
+    theme,
     toggleTheme,
     resetCode,
-    applyRemoteSnapshot,
+    isSaving,
     handleEditorMount,
-  } = useCollaborativeEditor({
+  } = useYjsEditor({
     roomId,
-    problemId,
-    defaultCode: resolveStarterCode(problem?.starterCode, "javascript"),
-    remoteUpdate,
-    sendCodeUpdate,
-    sendLanguageChange,
-    updateTyping,
+    userId:   myUserId,
+    userName: user?.name || "Anonymous",
+    userRole: role,
+    defaultCode,
   });
 
-  // Wire snapshotRef → applyRemoteSnapshot so the interview room hook can
-  // deliver the snapshot without causing a circular dep.
-  snapshotRef.current = (snap: RoomSnapshot) => {
-    if (snap.code) {
-      applyRemoteSnapshot(snap.code, snap.language || "javascript");
+  // codeRef for Run/Submit — reads Monaco model directly (avoids stale closure)
+  const codeRef = useRef<string>("");
+  const getLatestCode = useCallback((): string => {
+    const editor = editorRef.current as Monaco.editor.IStandaloneCodeEditor | null;
+    if (editor) {
+      const val = editor.getValue();
+      codeRef.current = val;
+      return val;
     }
-  };
-
-  // ── Cursor presence ───────────────────────────────────────────────────────
-  useCursorPresence({
-    editorRef,
-    roomId,
-    myUserId,
-    participantIds: participants.map((p) => p.userId),
-  });
-
-  const examples = useMemo(() => {
-    if (problem?.examples?.length) return problem.examples;
-    return problem?.testCases || [];
-  }, [problem]) as ExampleCase[];
+    return codeRef.current;
+  }, [editorRef]);
 
   // ── Run ────────────────────────────────────────────────────────────────────
   const handleRun = () => {
     if (!problemId) return;
-    const currentCode = codeRef.current;
-    const currentLanguage = language;
+    const currentCode = getLatestCode();
     const sampleInput = examples?.[0]?.input || "";
 
     setRunResult(null);
@@ -199,7 +180,7 @@ const InterviewWorkspace = () => {
     setBottomTab("Output");
 
     runMutation.mutate(
-      { problemId, sourceCode: currentCode, language: currentLanguage, input: sampleInput },
+      { problemId, sourceCode: currentCode, language, input: sampleInput },
       {
         onSuccess: (data) => {
           const result = data?.result;
@@ -207,7 +188,7 @@ const InterviewWorkspace = () => {
             stdout: result?.stdout ?? "",
             stderr: result?.stderr ?? "",
             runtime: result?.runtime ?? null,
-            memory: result?.memory ?? null,
+            memory:  result?.memory  ?? null,
           });
           setRunStatus("done");
           if (result?.stderr && !result?.stdout) setBottomTab("Error");
@@ -217,7 +198,7 @@ const InterviewWorkspace = () => {
             stdout: "",
             stderr: error?.message || "Run failed. Check your network connection.",
             runtime: null,
-            memory: null,
+            memory:  null,
           });
           setRunStatus("error");
           setBottomTab("Error");
@@ -229,8 +210,7 @@ const InterviewWorkspace = () => {
   // ── Submit ─────────────────────────────────────────────────────────────────
   const handleSubmit = () => {
     if (!problemId) return;
-    const currentCode = codeRef.current;
-    const currentLanguage = language;
+    const currentCode = getLatestCode();
 
     setSubmitStatus("queuing");
     setBottomOpen(true);
@@ -238,7 +218,7 @@ const InterviewWorkspace = () => {
     setActiveTab("Submissions");
 
     submissionMutation.mutate(
-      { problemId, sourceCode: currentCode, language: currentLanguage, roomId },
+      { problemId, sourceCode: currentCode, language, roomId },
       {
         onSuccess: () => {
           setSubmitStatus("queued");
@@ -281,25 +261,30 @@ const InterviewWorkspace = () => {
     }
   }, [submissions, problemId, queryClient]);
 
+  const examples = useMemo(() => {
+    if (problem?.examples?.length) return problem.examples;
+    return problem?.testCases || [];
+  }, [problem]) as ExampleCase[];
+
   // ── Verdict / status helpers ───────────────────────────────────────────────
   const verdictClass = (verdict?: string) => {
     switch (verdict) {
-      case "Accepted": return "bg-emerald-500/10 text-emerald-700 border-emerald-500/20";
-      case "Wrong Answer": return "bg-rose-500/10 text-rose-700 border-rose-500/20";
-      case "Compilation Error": return "bg-amber-500/10 text-amber-700 border-amber-500/20";
-      case "Runtime Error": return "bg-yellow-500/10 text-yellow-700 border-yellow-500/20";
+      case "Accepted":            return "bg-emerald-500/10 text-emerald-700 border-emerald-500/20";
+      case "Wrong Answer":        return "bg-rose-500/10 text-rose-700 border-rose-500/20";
+      case "Compilation Error":   return "bg-amber-500/10 text-amber-700 border-amber-500/20";
+      case "Runtime Error":       return "bg-yellow-500/10 text-yellow-700 border-yellow-500/20";
       case "Time Limit Exceeded": return "bg-purple-500/10 text-purple-700 border-purple-500/20";
-      default: return "bg-ink/5 text-ink/70 border-ink/15";
+      default:                    return "bg-ink/5 text-ink/70 border-ink/15";
     }
   };
 
   const statusClass = (status?: string) => {
     switch (status) {
-      case "queued": return "bg-ink/5 text-ink/70 border-ink/15";
+      case "queued":     return "bg-ink/5 text-ink/70 border-ink/15";
       case "processing": return "bg-blue-500/10 text-blue-700 border-blue-500/20";
-      case "completed": return "bg-emerald-500/10 text-emerald-700 border-emerald-500/20";
-      case "failed": return "bg-rose-500/10 text-rose-700 border-rose-500/20";
-      default: return "bg-ink/5 text-ink/70 border-ink/15";
+      case "completed":  return "bg-emerald-500/10 text-emerald-700 border-emerald-500/20";
+      case "failed":     return "bg-rose-500/10 text-rose-700 border-rose-500/20";
+      default:           return "bg-ink/5 text-ink/70 border-ink/15";
     }
   };
 
@@ -441,14 +426,6 @@ const InterviewWorkspace = () => {
     </div>
   );
 
-  // ── Typing label ──────────────────────────────────────────────────────────
-  const typingLabel = useMemo(() => {
-    const others = typingUsers.filter((u) => u.userId !== myUserId);
-    if (!others.length) return null;
-    if (others.length === 1) return `${others[0].name} is typing…`;
-    return `${others.length} people are typing…`;
-  }, [typingUsers, myUserId]);
-
   // ── Center panel ──────────────────────────────────────────────────────────
   const centerPanel = (
     <div className="flex h-full min-h-0 flex-col">
@@ -458,7 +435,7 @@ const InterviewWorkspace = () => {
           <select
             aria-label="Select language"
             value={language}
-            onChange={(e) => changeLanguage(e.target.value)}
+            onChange={(e) => setLanguage(e.target.value)}
             className="rounded-full border border-ink/20 bg-white px-3 py-1"
           >
             <option value="javascript">JavaScript</option>
@@ -469,7 +446,7 @@ const InterviewWorkspace = () => {
           <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
             isSaving ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"
           }`}>
-            {isSaving ? "Saving…" : "Saved"}
+            {isSaving ? "Syncing…" : "Synced ✓"}
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -490,6 +467,7 @@ const InterviewWorkspace = () => {
         </div>
       </div>
 
+      {/* Monaco Editor — uncontrolled (MonacoBinding drives content) */}
       <div className="min-h-0 flex-1 p-3">
         <div className="h-full rounded-2xl border border-ink/10 bg-white overflow-hidden">
           <Editor
@@ -497,8 +475,7 @@ const InterviewWorkspace = () => {
             width="100%"
             theme={theme}
             language={language}
-            value={code}
-            onChange={(value) => updateCode(value || "")}
+            defaultValue=""
             onMount={handleEditorMount}
             options={{
               minimap: { enabled: false },
@@ -520,9 +497,6 @@ const InterviewWorkspace = () => {
         <Button variant="accent" onClick={handleSubmit} disabled={isSubmitting || isRunning}>
           Submit
         </Button>
-        {typingLabel && (
-          <span className="text-xs text-ink/50 italic">{typingLabel}</span>
-        )}
         {(isSubmitting || submitStatus === "queuing") && (
           <span className="text-xs text-ink/60">Queuing submission…</span>
         )}
@@ -539,18 +513,16 @@ const InterviewWorkspace = () => {
   // ── Right panel ───────────────────────────────────────────────────────────
   const rightPanel = (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Presence sidebar takes top portion */}
       <div className="min-h-0 flex-1 overflow-hidden">
         <PresenceSidebar
           participants={participants}
-          typingUsers={typingUsers}
+          typingUsers={[]}
           connectionStatus={connectionStatus}
           reconnectAttempt={reconnectAttempt}
           myUserId={myUserId}
         />
       </div>
 
-      {/* Activity + Share at bottom */}
       <div className="flex-none space-y-3 border-t border-ink/8 p-3 overflow-y-auto max-h-56">
         <Card title="Activity">
           <div className="space-y-1 text-xs text-ink/60 max-h-24 overflow-y-auto">
@@ -632,8 +604,8 @@ const InterviewWorkspace = () => {
           )}
           {examples.length ? (
             examples.map((item: ExampleCase, index: number) => {
-              const expected = item.output || item.expectedOutput || "";
-              const actual = runResult?.stdout ?? "";
+              const expected     = item.output || item.expectedOutput || "";
+              const actual       = runResult?.stdout ?? "";
               const hasRunResult = runStatus === "done";
               const passed =
                 hasRunResult && expected !== ""
@@ -675,12 +647,11 @@ const InterviewWorkspace = () => {
 
   return (
     <div className="flex min-h-[calc(100vh-8rem)] flex-col gap-3">
-      {/* Reconnect banner sits above everything */}
       <ReconnectBanner status={connectionStatus} reconnectAttempt={reconnectAttempt} />
 
       <SectionHeader
         title="Interview workspace"
-        subtitle="Collaborative coding session"
+        subtitle="Collaborative coding session — powered by Yjs CRDT"
         action={
           <div className="flex items-center gap-2">
             <Badge>Room: {roomId}</Badge>
@@ -691,7 +662,11 @@ const InterviewWorkspace = () => {
                 ? "bg-amber-100 text-amber-700"
                 : "bg-slate-100 text-slate-500"
             }`}>
-              {connectionStatus === "online" ? "🟢 Live" : connectionStatus === "reconnecting" ? "🟡 Reconnecting" : "🔴 Offline"}
+              {connectionStatus === "online"
+                ? "🟢 Live"
+                : connectionStatus === "reconnecting"
+                ? "🟡 Reconnecting"
+                : "🔴 Offline"}
             </span>
           </div>
         }

@@ -25,11 +25,14 @@
     "express": "^5.2.1",
     "ioredis": "^5.4.1",
     "jsonwebtoken": "^9.0.3",
+    "lib0": "^0.2.117",
     "mongoose": "^9.6.2",
     "multer": "^2.0.2",
     "pdf-parse": "^1.1.1",
     "redis": "^4.7.0",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.31"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

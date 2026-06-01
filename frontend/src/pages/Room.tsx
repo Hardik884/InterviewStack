@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+/**
+ * Room.tsx — Room lobby / waiting room page.
+ *
+ * Updated to use useInterviewRoom (presence) + useYjsEditor (CRDT editor).
+ * Legacy useRoomSocket removed.
+ */
+
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import Editor from "@monaco-editor/react";
 import Button from "../components/ui/Button";
@@ -8,9 +15,13 @@ import SectionHeader from "../components/ui/SectionHeader";
 import ReconnectBanner from "../components/workspace/ReconnectBanner";
 import PresenceSidebar from "../components/workspace/PresenceSidebar";
 import { useAuth } from "../hooks/useAuth";
-import { useRoomSocket } from "../hooks/useRoomSocket";
+import { useInterviewRoom } from "../hooks/useInterviewRoom";
+import { useYjsEditor } from "../hooks/useYjsEditor";
 import { useProblems } from "../hooks/useProblems";
+import { useConnectionStatus } from "../hooks/useConnectionStatus";
+import { getSocket } from "../sockets/socketClient";
 import toast from "react-hot-toast";
+import type * as Monaco from "monaco-editor";
 
 const RoomSession = () => {
   const { roomId } = useParams<{ roomId: string }>();
@@ -20,7 +31,6 @@ const RoomSession = () => {
     token?: string | null;
     user?: { name?: string; _id?: string; id?: string } | null;
   };
-  const [theme, setTheme] = useState<"vs-dark" | "light">("vs-dark");
   const [showPresence, setShowPresence] = useState(true);
   const [localName] = useState(() => location.state?.name || user?.name || "Anonymous");
 
@@ -34,23 +44,6 @@ const RoomSession = () => {
   const { data: problemsData } = useProblems({ limit: 5 });
   const recentProblems = problemsData?.problems || [];
 
-  const {
-    participants,
-    code,
-    language,
-    typingUsers,
-    activity,
-    connectionStatus,
-    sendCode,
-    updateTyping,
-    changeLanguage,
-  } = useRoomSocket({
-    token,
-    roomId: roomId || "",
-    name: localName,
-    role: "interviewer",
-  });
-
   const myUserId = useMemo(
     () =>
       (user as Record<string, string> | null)?._id ??
@@ -59,20 +52,34 @@ const RoomSession = () => {
     [user]
   );
 
-  // Persist code to localStorage (debounced)
-  useEffect(() => {
-    if (!roomId || !code) return;
-    const key = `room:${roomId}:code`;
-    const handle = setTimeout(() => localStorage.setItem(key, code), 500);
-    return () => clearTimeout(handle);
-  }, [code, roomId]);
+  // ── Presence (participants, activity, connection status) ──────────────────
+  const { participants, activity, connectionStatus: roomStatus } = useInterviewRoom({
+    token,
+    roomId: roomId || "",
+    name: localName,
+    role: "interviewer",
+  });
 
-  const typingLabel = useMemo(() => {
-    const others = typingUsers.filter((u) => u.userId !== myUserId);
-    if (!others.length) return null;
-    if (others.length === 1) return `${others[0].name} is typing…`;
-    return `${others.length} people are typing…`;
-  }, [typingUsers, myUserId]);
+  const { status: connectionStatus, reconnectAttempt } = useConnectionStatus({
+    socket: getSocket() ?? undefined,
+  });
+
+  // ── Yjs CRDT Editor ───────────────────────────────────────────────────────
+  const {
+    editorRef,
+    language,
+    setLanguage,
+    theme,
+    toggleTheme,
+    handleEditorMount,
+    isSaving,
+  } = useYjsEditor({
+    roomId: roomId || "",
+    userId: myUserId,
+    userName: localName,
+    userRole: "interviewer",
+    defaultCode: "// Collaborative scratch pad — changes sync in real-time\n",
+  });
 
   const handleStartInterview = (problemId: string) => {
     navigate(`/interview/${roomId}/${problemId}`);
@@ -87,17 +94,15 @@ const RoomSession = () => {
     return <p className="text-sm text-ink/60">Room not found.</p>;
   }
 
-  // Reconnect attempt count — derive from connectionStatus
-  const reconnectAttempt = connectionStatus === "reconnecting" ? 1 : 0;
+  const reconnectAttemptNum = connectionStatus === "reconnecting" ? 1 : 0;
 
   return (
     <div className="space-y-4">
-      {/* Reconnect banner */}
       <ReconnectBanner status={connectionStatus} reconnectAttempt={reconnectAttempt} />
 
       <SectionHeader
         title={`Room ${roomId}`}
-        subtitle="Collaborative coding session"
+        subtitle="Collaborative coding session — powered by Yjs CRDT"
         action={
           <div className="flex items-center gap-2">
             <Badge>Live</Badge>
@@ -122,14 +127,17 @@ const RoomSession = () => {
 
       <div className="grid gap-6 xl:grid-cols-[2.2fr_1fr]">
         {/* ── Editor ─────────────────────────────────────────────────────── */}
-        <Card title="Editor" subtitle="Real-time sync enabled">
+        <Card
+          title="Editor"
+          subtitle={isSaving ? "Syncing…" : "Synced ✓ — real-time CRDT sync enabled"}
+        >
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-xs">
             <div className="flex items-center gap-2">
               <span className="text-ink/60">Language</span>
               <select
                 aria-label="Select language"
                 value={language}
-                onChange={(e) => changeLanguage(e.target.value)}
+                onChange={(e) => setLanguage(e.target.value)}
                 className="rounded-full border border-ink/20 bg-white px-3 py-1"
               >
                 <option value="javascript">JavaScript</option>
@@ -144,22 +152,20 @@ const RoomSession = () => {
               <button
                 type="button"
                 className="rounded-full border border-ink/20 px-3 py-1"
-                onClick={() => setTheme((prev) => (prev === "vs-dark" ? "light" : "vs-dark"))}
+                onClick={toggleTheme}
               >
                 {theme === "vs-dark" ? "🌙 Dark" : "☀️ Light"}
               </button>
             </div>
           </div>
 
+          {/* Monaco — uncontrolled, MonacoBinding drives content */}
           <Editor
             height="420px"
             theme={theme}
             language={language}
-            value={code}
-            onChange={(value) => {
-              sendCode(value || "");
-              updateTyping(true);
-            }}
+            defaultValue=""
+            onMount={handleEditorMount}
             options={{
               minimap: { enabled: false },
               fontSize: 14,
@@ -169,15 +175,10 @@ const RoomSession = () => {
               wordWrap: "on",
             }}
           />
-
-          {typingLabel && (
-            <p className="mt-2 text-xs text-ink/60 italic">{typingLabel}</p>
-          )}
         </Card>
 
         {/* ── Sidebar ─────────────────────────────────────────────────────── */}
         <div className="space-y-4">
-          {/* Presence sidebar */}
           <div className="rounded-2xl border border-ink/10 bg-white/80 overflow-hidden">
             <div className="flex items-center justify-between px-4 py-2 border-b border-ink/8">
               <p className="text-xs font-semibold text-ink/70">Participants</p>
@@ -193,7 +194,7 @@ const RoomSession = () => {
               <div className="max-h-64 overflow-y-auto">
                 <PresenceSidebar
                   participants={participants}
-                  typingUsers={typingUsers}
+                  typingUsers={[]}
                   connectionStatus={connectionStatus}
                   reconnectAttempt={reconnectAttempt}
                   myUserId={myUserId}
@@ -202,7 +203,6 @@ const RoomSession = () => {
             )}
           </div>
 
-          {/* Activity */}
           <Card title="Room activity">
             <div className="space-y-1 text-xs text-ink/60 max-h-32 overflow-y-auto">
               {activity.map((item, index) => (
@@ -212,7 +212,6 @@ const RoomSession = () => {
             </div>
           </Card>
 
-          {/* Start with a problem */}
           {recentProblems.length > 0 && (
             <Card title="Start with a problem">
               <div className="space-y-2 text-xs">
@@ -231,7 +230,6 @@ const RoomSession = () => {
             </Card>
           )}
 
-          {/* Share */}
           <Card title="Share">
             <div className="space-y-2">
               <p className="text-xs text-ink/60 break-all">{window.location.href}</p>
