@@ -15,6 +15,11 @@ const emitSubmissionUpdate = (io, submission) => {
     status: submission.status,
     problemId: String(submission.problemId),
     userId: String(submission.userId || submission.submittedBy),
+    stdout: submission.stdout || "",
+    stderr: submission.stderr || "",
+    runtime: submission.runtime ?? null,
+    memory: submission.memory ?? null,
+    executionTime: submission.executionTime ?? null,
   };
 
   if (submission.roomId) {

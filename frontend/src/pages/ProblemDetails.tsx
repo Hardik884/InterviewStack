@@ -12,6 +12,7 @@ import TagChip from "../components/TagChip";
 import { useProblemBySlug } from "../hooks/useProblemBySlug";
 import { useRunSubmission } from "../hooks/useRunSubmission";
 import { useCreateSubmission } from "../hooks/useCreateSubmission";
+import { useAuth } from "../hooks/useAuth";
 import toast from "react-hot-toast";
 
 type RunResult = {
@@ -37,6 +38,7 @@ const ProblemDetails = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data, isLoading } = useProblemBySlug(id);
+  const { user } = useAuth() as { user?: { name?: string } | null };
   const [language, setLanguage] = useState("javascript");
   const [theme, setTheme] = useState<"vs-dark" | "light">("vs-dark");
   const [activeTab, setActiveTab] = useState<"output" | "error" | "submissions">("output");
@@ -111,16 +113,23 @@ const ProblemDetails = () => {
     );
   };
 
+  const handleStartInterview = () => {
+    const roomId = `room-${Math.random().toString(36).slice(2, 8)}`;
+    // Go through role selection — interviewer will pick their role
+    navigate(`/join/${roomId}`, {
+      state: { problemId: problem?._id, name: user?.name },
+    });
+  };
+
   const handleSubmit = () => {
     const currentCode = codeRef.current;
     if (!currentCode.trim()) {
       toast.error("Please write some code before submitting.");
       return;
     }
-    setSubmitStatus("queuing");
-
-    // Navigate to the workspace so the full pipeline can run
     const roomId = `solo-${Math.random().toString(36).slice(2, 8)}`;
+    // For solo mode, auto-set role as candidate and go straight to workspace
+    sessionStorage.setItem(`room:${roomId}:role`, "candidate");
     navigate(`/interview/${roomId}/${problem?._id}`);
   };
 
@@ -142,7 +151,7 @@ const ProblemDetails = () => {
       />
 
       <div className="flex flex-wrap gap-3">
-        <Button variant="accent" onClick={() => navigate(`/interview/room-${Math.random().toString(36).slice(2, 8)}/${problem._id}`)}>
+        <Button variant="accent" onClick={handleStartInterview}>
           Start Interview
         </Button>
         <Button variant="ghost" onClick={handleSubmit}>

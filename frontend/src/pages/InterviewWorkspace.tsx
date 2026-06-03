@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import Editor from "@monaco-editor/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -84,28 +84,27 @@ const resolveStarterCode = (
 
 const InterviewWorkspace = () => {
   const { roomId = "", problemId = "" } = useParams();
+  const navigate = useNavigate();
   const { user, token } = useAuth() as {
     user?: { name?: string; _id?: string; id?: string } | null;
     token?: string | null;
   };
   const queryClient = useQueryClient();
-  const { data, isLoading } = useProblem(problemId);
-  const problem = data?.problem;
 
-  const [activeTab, setActiveTab]   = useState("Description");
-  const [bottomTab, setBottomTab]   = useState("Output");
-  const [bottomOpen, setBottomOpen] = useState(true);
+  // ── Role ──────────────────────────────────────────────────────────────────
+  const role = useMemo<"interviewer" | "candidate">(() => {
+    const stored = sessionStorage.getItem(`room:${roomId}:role`);
+    if (stored === "interviewer" || stored === "host") return "interviewer";
+    return "candidate";
+  }, [roomId]);
 
-  const [runResult, setRunResult]     = useState<RunResult | null>(null);
-  const [runStatus, setRunStatus]     = useState<"idle" | "running" | "done" | "error">("idle");
-  const [submitStatus, setSubmitStatus] = useState<"idle" | "queuing" | "queued">("idle");
-
-  const { data: submissionData } = useSubmissionsByProblem(problemId);
-  const submissionMutation = useCreateSubmission();
-  const runMutation        = useRunSubmission();
-  const submissions        = (submissionData?.submissions || []) as SubmissionItem[];
-  const isSubmitting       = submissionMutation.isPending;
-  const isRunning          = runMutation.isPending;
+  // ── Role guard: redirect to role selection if no role stored ────────────
+  useEffect(() => {
+    const stored = sessionStorage.getItem(`room:${roomId}:role`);
+    if (!stored && roomId && !roomId.startsWith("solo-")) {
+      navigate(`/join/${roomId}`, { replace: true, state: { problemId } });
+    }
+  }, [roomId, problemId, navigate]);
 
   // ── User identity ─────────────────────────────────────────────────────────
   const myUserId = useMemo(
@@ -116,28 +115,8 @@ const InterviewWorkspace = () => {
     [user]
   );
 
-  // ── Role ──────────────────────────────────────────────────────────────────
-  const role = useMemo<"interviewer" | "candidate">(() => {
-    const stored = sessionStorage.getItem(`room:${roomId}:role`);
-    if (stored === "interviewer" || stored === "host") return "interviewer";
-    return "candidate";
-  }, [roomId]);
-
-  // ── Room presence (participants, activity, connection status) ─────────────
-  const { participants, activity, connectionStatus: roomConnectionStatus } = useInterviewRoom({
-    token,
-    roomId,
-    name: user?.name || "Anonymous",
-    role,
-  });
-
-  // ── Connection status (for banner) ────────────────────────────────────────
-  const { status: connectionStatus, reconnectAttempt } = useConnectionStatus({
-    socket: getSocket() ?? undefined,
-  });
-
-  // ── Yjs CRDT editor ───────────────────────────────────────────────────────
-  const defaultCode = resolveStarterCode(problem?.starterCode, "javascript");
+  // ── Yjs CRDT editor (must come before useProblem so remoteProblemId is available) ──
+  const defaultCode = "// Start coding\n";
 
   const {
     editorRef,
@@ -148,6 +127,7 @@ const InterviewWorkspace = () => {
     resetCode,
     isSaving,
     handleEditorMount,
+    remoteProblemId,
   } = useYjsEditor({
     roomId,
     userId:   myUserId,
@@ -168,9 +148,59 @@ const InterviewWorkspace = () => {
     return codeRef.current;
   }, [editorRef]);
 
+  // ── Effective problemId: URL param takes precedence, fall back to Yjs meta ─
+  const effectiveProblemId = problemId || remoteProblemId || "";
+
+  // Emit problem:set once on mount so all participants receive the problemId
+  // (interviewer navigates here with a URL problemId; candidate may not have it)
+  useEffect(() => {
+    if (!problemId || !roomId) return;
+    const socket = getSocket();
+    if (socket?.connected) {
+      socket.emit("problem:set", { roomId, problemId });
+    }
+    // Also store locally so candidates can navigate to it from the lobby
+    sessionStorage.setItem(`room:${roomId}:problemId`, problemId);
+  }, [problemId, roomId]);
+
+  const { data, isLoading } = useProblem(effectiveProblemId);
+  const problem = data?.problem;
+
+  const [activeTab, setActiveTab]   = useState("Description");
+  const [bottomTab, setBottomTab]   = useState("Output");
+  const [bottomOpen, setBottomOpen] = useState(true);
+
+  const [runResult, setRunResult]     = useState<RunResult | null>(null);
+  const [runStatus, setRunStatus]     = useState<"idle" | "running" | "done" | "error">("idle");
+  const [submitStatus, setSubmitStatus] = useState<"idle" | "queuing" | "queued">("idle");
+
+  // Shared run result received from another participant (e.g. interviewer sees candidate's run)
+  const [sharedRunResult, setSharedRunResult] = useState<(RunResult & { fromSelf?: boolean }) | null>(null);
+  const [sharedRunStatus, setSharedRunStatus] = useState<"idle" | "done" | "error">("idle");
+
+  const { data: submissionData } = useSubmissionsByProblem(effectiveProblemId);
+  const submissionMutation = useCreateSubmission();
+  const runMutation        = useRunSubmission();
+  const submissions        = (submissionData?.submissions || []) as SubmissionItem[];
+  const isSubmitting       = submissionMutation.isPending;
+  const isRunning          = runMutation.isPending;
+
+  // ── Room presence (participants, activity, connection status) ─────────────
+  const { participants, activity, connectionStatus: roomConnectionStatus } = useInterviewRoom({
+    token,
+    roomId,
+    name: user?.name || "Anonymous",
+    role,
+  });
+
+  // ── Connection status (for banner) ────────────────────────────────────────
+  const { status: connectionStatus, reconnectAttempt } = useConnectionStatus({
+    socket: getSocket() ?? undefined,
+  });
+
   // ── Run ────────────────────────────────────────────────────────────────────
   const handleRun = () => {
-    if (!problemId) return;
+    if (!effectiveProblemId) return;
     const currentCode = getLatestCode();
     const sampleInput = examples?.[0]?.input || "";
 
@@ -180,28 +210,43 @@ const InterviewWorkspace = () => {
     setBottomTab("Output");
 
     runMutation.mutate(
-      { problemId, sourceCode: currentCode, language, input: sampleInput },
+      { problemId: effectiveProblemId, sourceCode: currentCode, language, input: sampleInput },
       {
         onSuccess: (data) => {
           const result = data?.result;
-          setRunResult({
+          const runRes: RunResult = {
             stdout: result?.stdout ?? "",
             stderr: result?.stderr ?? "",
             runtime: result?.runtime ?? null,
             memory:  result?.memory  ?? null,
-          });
+          };
+          setRunResult(runRes);
           setRunStatus("done");
           if (result?.stderr && !result?.stdout) setBottomTab("Error");
+
+          // ── Broadcast run result to all room participants ──────────────────
+          // Only emit if we're in a real room (not solo), so the interviewer sees it.
+          const socket = getSocket();
+          if (socket?.connected && roomId && !roomId.startsWith("solo-")) {
+            socket.emit("run:result", { roomId, result: runRes });
+          }
         },
         onError: (error: Error) => {
-          setRunResult({
+          const runRes: RunResult = {
             stdout: "",
             stderr: error?.message || "Run failed. Check your network connection.",
             runtime: null,
             memory:  null,
-          });
+          };
+          setRunResult(runRes);
           setRunStatus("error");
           setBottomTab("Error");
+
+          // Also broadcast errors so interviewer sees the failure
+          const socket = getSocket();
+          if (socket?.connected && roomId && !roomId.startsWith("solo-")) {
+            socket.emit("run:result", { roomId, result: runRes });
+          }
         },
       }
     );
@@ -209,7 +254,7 @@ const InterviewWorkspace = () => {
 
   // ── Submit ─────────────────────────────────────────────────────────────────
   const handleSubmit = () => {
-    if (!problemId) return;
+    if (!effectiveProblemId) return;
     const currentCode = getLatestCode();
 
     setSubmitStatus("queuing");
@@ -218,11 +263,11 @@ const InterviewWorkspace = () => {
     setActiveTab("Submissions");
 
     submissionMutation.mutate(
-      { problemId, sourceCode: currentCode, language, roomId },
+      { problemId: effectiveProblemId, sourceCode: currentCode, language, roomId },
       {
         onSuccess: () => {
           setSubmitStatus("queued");
-          queryClient.invalidateQueries({ queryKey: ["submissions", problemId] });
+          queryClient.invalidateQueries({ queryKey: ["submissions", effectiveProblemId] });
         },
         onError: () => setSubmitStatus("idle"),
       }
@@ -230,7 +275,7 @@ const InterviewWorkspace = () => {
   };
 
   // ── Copy invite link ───────────────────────────────────────────────────────
-  const shareLink = `${window.location.origin}/interview/${roomId}/${problemId}`;
+  const shareLink = `${window.location.origin}/interview/${roomId}/${effectiveProblemId}`;
   const handleCopyLink = async () => {
     await navigator.clipboard.writeText(shareLink);
     toast.success("Invite link copied!");
@@ -240,15 +285,55 @@ const InterviewWorkspace = () => {
   useEffect(() => {
     const socket = getSocket();
     if (!socket) return;
-    const handler = (payload: { problemId?: string }) => {
-      if (payload?.problemId === problemId) {
-        queryClient.invalidateQueries({ queryKey: ["submissions", problemId] });
+    const handler = (payload: {
+      problemId?: string;
+      status?: string;
+      verdict?: string;
+      stdout?: string;
+      stderr?: string;
+      runtime?: number | null;
+      memory?: number | null;
+      executionTime?: number | null;
+    }) => {
+      if (payload?.problemId === effectiveProblemId) {
+        queryClient.invalidateQueries({ queryKey: ["submissions", effectiveProblemId] });
         setSubmitStatus("idle");
+
+        // Share submission execution output room-wide so interviewer sees results
+        if (payload.status === "completed" || payload.status === "failed") {
+          const submissionResult: RunResult = {
+            stdout: payload.stdout || "",
+            stderr: payload.stderr || "",
+            runtime: payload.runtime ?? payload.executionTime ?? null,
+            memory: payload.memory ?? null,
+          };
+          // Only update shared results if there's actual output
+          if (submissionResult.stdout || submissionResult.stderr) {
+            setSharedRunResult(submissionResult);
+            setSharedRunStatus(submissionResult.stderr && !submissionResult.stdout ? "error" : "done");
+            setBottomOpen(true);
+            setBottomTab("Output");
+          }
+        }
       }
     };
     socket.on("submission:update", handler);
     return () => { socket.off("submission:update", handler); };
-  }, [problemId, queryClient]);
+  }, [effectiveProblemId, queryClient]);
+
+  // ── Shared run results (interviewer sees candidate's run output) ───────────
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket || !roomId) return;
+    const handler = (payload: { roomId: string; result: RunResult }) => {
+      if (payload.roomId !== roomId) return;
+      setSharedRunResult(payload.result);
+      setSharedRunStatus(payload.result.stderr && !payload.result.stdout ? "error" : "done");
+      setBottomOpen(true);
+    };
+    socket.on("run:result", handler);
+    return () => { socket.off("run:result", handler); };
+  }, [roomId]);
 
   // ── Poll while submission pending ──────────────────────────────────────────
   useEffect(() => {
@@ -568,17 +653,51 @@ const InterviewWorkspace = () => {
       </div>
 
       {bottomTab === "Output" && (
-        <div className="rounded-2xl bg-ink/5 p-4 font-mono text-xs text-ink/70 whitespace-pre-wrap">
-          {runStatus === "running" ? (
-            <span className="text-ink/50 italic">Running…</span>
-          ) : runStatus === "idle" ? (
-            <span className="text-ink/40 italic">Run code to see output.</span>
-          ) : runResult?.stdout ? (
-            runResult.stdout
-          ) : runStatus === "error" || runResult?.stderr ? (
-            <span className="text-ink/40 italic">No stdout. Check the Error tab.</span>
-          ) : (
-            <span className="text-ink/40 italic">No output produced.</span>
+        <div className="space-y-3">
+          {/* Local run result */}
+          <div className="rounded-2xl bg-ink/5 p-4 font-mono text-xs text-ink/70 whitespace-pre-wrap">
+            {runStatus === "running" ? (
+              <span className="text-ink/50 italic">Running…</span>
+            ) : runStatus === "idle" && !sharedRunResult ? (
+              <span className="text-ink/40 italic">Run code to see output.</span>
+            ) : runResult?.stdout ? (
+              <>
+                <div>{runResult.stdout}</div>
+                {runResult.runtime != null && (
+                  <div className="mt-2 text-ink/40">
+                    {runResult.runtime}ms{runResult.memory != null ? ` · ${runResult.memory}KB` : ""}
+                  </div>
+                )}
+              </>
+            ) : runStatus === "error" || runResult?.stderr ? (
+              <span className="text-ink/40 italic">No stdout. Check the Error tab.</span>
+            ) : sharedRunResult ? null : (
+              <span className="text-ink/40 italic">No output produced.</span>
+            )}
+          </div>
+
+          {/* Shared run result from the other participant */}
+          {sharedRunResult && sharedRunStatus !== "idle" && (
+            <div className="rounded-2xl border border-navy/15 bg-navy/4 p-4">
+              <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-navy/60">
+                {role === "interviewer" ? "📺 Candidate's Run Output" : "🔄 Shared Run Output"}
+              </p>
+              <div className="font-mono text-xs text-ink/70 whitespace-pre-wrap">
+                {sharedRunResult.stdout || (
+                  <span className="italic text-ink/40">No stdout.</span>
+                )}
+              </div>
+              {sharedRunResult.stderr && (
+                <div className="mt-2 font-mono text-xs text-rose-600 whitespace-pre-wrap">
+                  {sharedRunResult.stderr}
+                </div>
+              )}
+              {sharedRunResult.runtime != null && (
+                <p className="mt-2 text-[10px] text-ink/40">
+                  {sharedRunResult.runtime}ms{sharedRunResult.memory != null ? ` · ${sharedRunResult.memory}KB` : ""}
+                </p>
+              )}
+            </div>
           )}
         </div>
       )}

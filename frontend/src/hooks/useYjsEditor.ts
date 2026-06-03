@@ -7,6 +7,12 @@
  *   Y.Doc (per room) → Y.Text("code") ↔ MonacoBinding ↔ Monaco Editor
  *   Awareness ↔ Socket.IO (yjs:awareness) → Remote cursor decorations
  *
+ * Fix: Starter code injection is deferred until after sync-step2 arrives
+ *      so we never inject into a room that already has content.
+ *
+ * Fix: Cursor decorations use a stable ref-based collection to avoid
+ *      stale decoration IDs that caused cursor jumping/disappearing.
+ *
  * Socket events consumed:
  *   yjs:sync-step2   — server sends missing Y.Doc updates on join
  *   yjs:update       — incoming CRDT delta from peers
@@ -143,14 +149,25 @@ export const useYjsEditor = ({
   // Monaco editor ref (set by handleEditorMount)
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
 
-  // Decoration IDs per remote userId → string[]
-  const decorationsRef = useRef<Map<string, string[]>>(new Map());
+  // Stable decoration collection refs per remote userId
+  // key = userId string → Monaco IEditorDecorationsCollection
+  const decorationCollectionsRef = useRef<
+    Map<string, Monaco.editor.IEditorDecorationsCollection>
+  >(new Map());
 
   // ── UI state ──────────────────────────────────────────────────────────────
   const [language, setLanguageState] = useState<string>("javascript");
   const [theme, setTheme] = useState<"vs-dark" | "light">("vs-dark");
   const [isSaving, setIsSaving] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
+
+  // Track whether the server sync-step2 has been received.
+  // We use a ref (not state) so the handleEditorMount callback always reads
+  // the current value without needing to be re-created on each render.
+  const syncReceivedRef = useRef(false);
+
+  // problemId received from server (sync-step2 or problem:set broadcast)
+  const [remoteProblemId, setRemoteProblemId] = useState<string | null>(null);
 
   // ── Saving indicator ──────────────────────────────────────────────────────
   const savingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -161,6 +178,7 @@ export const useYjsEditor = ({
   }, []);
 
   // ── Awareness update: remote cursor decorations ───────────────────────────
+  // Uses Monaco's createDecorationsCollection API (stable — never causes stale IDs).
   const applyAwarenessDecorations = useCallback(() => {
     const editor = editorRef.current;
     const awareness = awarenessRef.current;
@@ -172,7 +190,12 @@ export const useYjsEditor = ({
     const states = awareness.getStates();
     const lineCount = model.getLineCount();
 
-    for (const [clientId, state] of states.entries()) {
+    const MonacoRange = (window as unknown as { monaco: typeof Monaco }).monaco?.Range;
+    if (!MonacoRange) return; // Monaco not fully loaded yet
+
+    const seenUserIds = new Set<string>();
+
+    for (const [, state] of states.entries()) {
       const user = state.user as AwarenessUser | undefined;
       if (!user || user.id === userId) continue; // skip self
 
@@ -181,66 +204,71 @@ export const useYjsEditor = ({
         head: { line: number; column: number } | null;
       } | undefined;
 
-      if (!cursor?.anchor || !cursor?.head) continue;
+      if (!cursor?.head) continue;
 
-      const color  = colorForUser(user.id);
+      seenUserIds.add(user.id);
+      const color = colorForUser(user.id);
       const newDecs: Monaco.editor.IModelDeltaDecoration[] = [];
 
       // Clamp cursor position
-      const line = Math.max(1, Math.min(cursor.head.line, lineCount));
-      const col  = Math.max(1, Math.min(cursor.head.column, model.getLineMaxColumn(line)));
+      const headLine = Math.max(1, Math.min(cursor.head.line, lineCount));
+      const headCol  = Math.max(1, Math.min(cursor.head.column, model.getLineMaxColumn(headLine)));
 
       // Cursor bar
       newDecs.push({
-        range: new (window as unknown as { monaco: typeof Monaco }).monaco.Range(
-          line, col, line, col
-        ),
+        range: new MonacoRange(headLine, headCol, headLine, headCol),
         options: {
           className: `yjs-cursor-${user.id}`,
           beforeContentClassName: `yjs-cursor-flag-${user.id}`,
-          stickiness: 1,
+          stickiness: 1, // NeverGrowsWhenTypingAtEdges
           zIndex: 100,
         },
       });
 
       // Selection highlight (if anchor ≠ head)
-      const al = cursor.anchor.line;
-      const ac = cursor.anchor.column;
-      const hl = cursor.head.line;
-      const hc = cursor.head.column;
+      if (cursor.anchor) {
+        const al = cursor.anchor.line;
+        const ac = cursor.anchor.column;
+        const hl = cursor.head.line;
+        const hc = cursor.head.column;
 
-      if (al !== hl || ac !== hc) {
-        const startLine = Math.min(al, hl);
-        const startCol  = al < hl ? ac : (al === hl ? Math.min(ac, hc) : hc);
-        const endLine   = Math.max(al, hl);
-        const endCol    = al > hl ? ac : (al === hl ? Math.max(ac, hc) : hc);
+        if (al !== hl || ac !== hc) {
+          const startLine = Math.min(al, hl);
+          const startCol  = al < hl ? ac : (al === hl ? Math.min(ac, hc) : hc);
+          const endLine   = Math.max(al, hl);
+          const endCol    = al > hl ? ac : (al === hl ? Math.max(ac, hc) : hc);
 
-        newDecs.push({
-          range: new (window as unknown as { monaco: typeof Monaco }).monaco.Range(
-            startLine, startCol, endLine, endCol
-          ),
-          options: {
-            className: `yjs-selection-${user.id}`,
-            stickiness: 1,
-          },
-        });
+          newDecs.push({
+            range: new MonacoRange(
+              Math.max(1, Math.min(startLine, lineCount)),
+              Math.max(1, startCol),
+              Math.max(1, Math.min(endLine, lineCount)),
+              Math.max(1, endCol),
+            ),
+            options: {
+              className: `yjs-selection-${user.id}`,
+              stickiness: 1,
+            },
+          });
+        }
       }
 
       ensureCursorStyles(user.id, user.name, user.role, color);
 
-      const oldIds = decorationsRef.current.get(user.id) ?? [];
-      const newIds = editor.deltaDecorations(oldIds, newDecs);
-      decorationsRef.current.set(user.id, newIds);
+      // Get or create a stable collection for this user
+      let collection = decorationCollectionsRef.current.get(user.id);
+      if (!collection) {
+        collection = editor.createDecorationsCollection([]);
+        decorationCollectionsRef.current.set(user.id, collection);
+      }
+      collection.set(newDecs);
     }
 
     // Remove decorations for users no longer in awareness
-    for (const [trackedId, oldIds] of decorationsRef.current.entries()) {
-      const stillPresent = Array.from(states.values()).some(
-        (s) => (s.user as AwarenessUser | undefined)?.id === trackedId
-      );
-      if (!stillPresent && trackedId !== userId) {
-        editor.deltaDecorations(oldIds, []);
-        decorationsRef.current.delete(trackedId);
+    for (const [trackedId, collection] of decorationCollectionsRef.current.entries()) {
+      if (!seenUserIds.has(trackedId) && trackedId !== userId) {
+        collection.clear();
+        decorationCollectionsRef.current.delete(trackedId);
         removeCursorStyles(trackedId);
       }
     }
@@ -248,7 +276,8 @@ export const useYjsEditor = ({
 
   // ── Emit local awareness state (cursor position + user info) ─────────────
   const lastAwarenessEmit = useRef(0);
-  const AWARENESS_THROTTLE_MS = 50;
+  // 80ms throttle — fast enough for a smooth feel, slow enough to not spam
+  const AWARENESS_THROTTLE_MS = 80;
 
   const emitAwareness = useCallback(() => {
     const now = Date.now();
@@ -268,25 +297,27 @@ export const useYjsEditor = ({
     }
   }, [roomId]);
 
-  // ── Yjs doc update observer → send delta to server ────────────────────────
-  const onDocUpdate = useCallback(
-    (update: Uint8Array, origin: unknown) => {
-      // Skip echoing updates that came FROM the server
-      if (origin === "server" || origin === "redis" || origin === "redis-pubsub") return;
+  // ── Stable refs for callbacks used inside effects ──────────────────────────
+  // These refs let the Y.Doc init effect use the latest callback without
+  // including them in its dependency array (which would destroy/recreate the
+  // doc on every callback identity change, breaking CRDT sync).
+  const markSavingRef = useRef(markSaving);
+  markSavingRef.current = markSaving;
 
-      markSaving();
-      const arr = Array.from(update);
-      const socket = getSocket();
-      if (socket?.connected) {
-        socket.emit("yjs:update", { roomId, update: arr });
-      }
-    },
-    [roomId, markSaving]
-  );
+  const applyDecorationsRef = useRef(applyAwarenessDecorations);
+  applyDecorationsRef.current = applyAwarenessDecorations;
+
+  const emitAwarenessRef = useRef(emitAwareness);
+  emitAwarenessRef.current = emitAwareness;
+
+  const roomIdRef = useRef(roomId);
+  roomIdRef.current = roomId;
 
   // ── Initialise Y.Doc, awareness, and socket listeners ────────────────────
   useEffect(() => {
     if (!roomId || !userId) return;
+
+    syncReceivedRef.current = false;
 
     const doc = new Y.Doc();
     const yText = doc.getText("code");
@@ -306,10 +337,23 @@ export const useYjsEditor = ({
 
     // Listen for awareness changes → re-render remote cursors
     const onAwarenessChange = () => {
-      applyAwarenessDecorations();
-      emitAwareness();
+      applyDecorationsRef.current();
+      emitAwarenessRef.current();
     };
     awareness.on("change", onAwarenessChange);
+
+    // Yjs doc update observer → send delta to server
+    const onDocUpdate = (update: Uint8Array, origin: unknown) => {
+      // Skip echoing updates that came FROM the server
+      if (origin === "server" || origin === "redis" || origin === "redis-pubsub") return;
+
+      markSavingRef.current();
+      const arr = Array.from(update);
+      const socket = getSocket();
+      if (socket?.connected) {
+        socket.emit("yjs:update", { roomId: roomIdRef.current, update: arr });
+      }
+    };
 
     // Listen for local Y.Doc updates → forward to server
     doc.on("update", onDocUpdate);
@@ -317,28 +361,47 @@ export const useYjsEditor = ({
     return () => {
       doc.off("update", onDocUpdate);
       awareness.off("change", onAwarenessChange);
+
+      // Clear all remote awareness states on unmount
       awareness.destroy();
       doc.destroy();
+
+      // Clear decoration collections
+      for (const collection of decorationCollectionsRef.current.values()) {
+        try { collection.clear(); } catch (_) {}
+      }
+      decorationCollectionsRef.current.clear();
+
       docRef.current       = null;
       yTextRef.current     = null;
       awarenessRef.current = null;
       if (savingTimerRef.current) clearTimeout(savingTimerRef.current);
     };
-  }, [roomId, userId, userName, userRole, myColor, onDocUpdate, applyAwarenessDecorations, emitAwareness]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId, userId, userName, userRole, myColor]);
 
   // ── Socket event listeners ────────────────────────────────────────────────
   useEffect(() => {
     if (!roomId) return;
 
-    const attachListeners = () => {
+    let cleanupFn: (() => void) | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const attachListeners = (): boolean => {
       const socket = getSocket();
-      if (!socket) return;
+      if (!socket) return false;
 
       // ── yjs:sync-step2: server sends missing updates ───────────────────────
-      const onSyncStep2 = ({ roomId: rid, update, language: lang }: {
+      const onSyncStep2 = ({
+        roomId: rid,
+        update,
+        language: lang,
+        problemId: pid,
+      }: {
         roomId: string;
         update: number[];
         language?: string;
+        problemId?: string | null;
       }) => {
         if (rid !== roomId) return;
         const doc = docRef.current;
@@ -347,7 +410,22 @@ export const useYjsEditor = ({
         try {
           Y.applyUpdate(doc, new Uint8Array(update), "server");
           if (lang) setLanguageState(lang);
+          if (pid)  setRemoteProblemId(pid);
+
+          // Mark that we've received the authoritative server state.
+          syncReceivedRef.current = true;
           setIsConnected(true);
+
+          // Now that we have the real doc state, inject starter code if room is empty
+          const yText = yTextRef.current;
+          if (yText && yText.length === 0) {
+            doc.transact(() => {
+              yText.insert(0, defaultCode);
+            }, "server"); // tag as server so we don't echo it back
+          }
+
+          // If editor is already mounted, re-apply decorations with fresh state
+          applyDecorationsRef.current();
         } catch (err) {
           console.error("[Yjs] Failed to apply sync-step2:", err);
         }
@@ -372,7 +450,7 @@ export const useYjsEditor = ({
         if (!awareness) return;
         try {
           applyAwarenessUpdate(awareness, new Uint8Array(update), "server");
-          applyAwarenessDecorations();
+          applyDecorationsRef.current();
         } catch (err) {
           console.error("[Yjs] Failed to apply awareness:", err);
         }
@@ -384,10 +462,20 @@ export const useYjsEditor = ({
         setLanguageState(language);
       };
 
+      // ── problem:set: interviewer selected a problem ─────────────────────
+      const onProblemSet = ({ roomId: rid, problemId: pid }: {
+        roomId: string;
+        problemId: string;
+      }) => {
+        if (rid !== roomId) return;
+        setRemoteProblemId(pid);
+      };
+
       // ── On (re)connect: send sync-step1 ───────────────────────────────────
       const sendSyncStep1 = () => {
         const doc = docRef.current;
         if (!doc) return;
+        syncReceivedRef.current = false; // reset so we re-check injection after reconnect
         const sv = Y.encodeStateVector(doc);
         socket.emit("yjs:sync-step1", { roomId, stateVector: Array.from(sv) });
         setIsConnected(true);
@@ -397,32 +485,42 @@ export const useYjsEditor = ({
       socket.on("yjs:update",       onYjsUpdate);
       socket.on("yjs:awareness",    onYjsAwareness);
       socket.on("language:changed", onLanguageChanged);
+      socket.on("problem:set",      onProblemSet);
       socket.on("connect",          sendSyncStep1);
       socket.on("reconnect",        sendSyncStep1);
 
       // Send sync-step1 immediately if already connected
       if (socket.connected) sendSyncStep1();
 
-      return () => {
+      cleanupFn = () => {
         socket.off("yjs:sync-step2",   onSyncStep2);
         socket.off("yjs:update",       onYjsUpdate);
         socket.off("yjs:awareness",    onYjsAwareness);
         socket.off("language:changed", onLanguageChanged);
+        socket.off("problem:set",      onProblemSet);
         socket.off("connect",          sendSyncStep1);
         socket.off("reconnect",        sendSyncStep1);
       };
+
+      return true;
     };
 
     // Socket might not exist yet when this effect runs — retry briefly
-    const timer = setTimeout(attachListeners, 100);
-    const cleanup = attachListeners();
+    if (!attachListeners()) {
+      retryTimer = setTimeout(() => attachListeners(), 100);
+    }
+
     return () => {
-      clearTimeout(timer);
-      cleanup?.();
+      if (retryTimer) clearTimeout(retryTimer);
+      cleanupFn?.();
     };
-  }, [roomId, applyAwarenessDecorations]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId, defaultCode]);
 
   // ── Monaco onMount: create MonacoBinding ─────────────────────────────────
+  // IMPORTANT: Do NOT inject defaultCode here.
+  // Injection now happens only inside onSyncStep2 after the server confirms
+  // the room is truly empty. This prevents duplicate starter code on joins.
   const handleEditorMount = useCallback(
     (editor: Monaco.editor.IStandaloneCodeEditor) => {
       editorRef.current = editor;
@@ -437,18 +535,10 @@ export const useYjsEditor = ({
         bindingRef.current = null;
       }
 
-      // Seed the Y.Text with defaultCode if it's empty (first user in room)
-      if (yText.length === 0) {
-        yText.insert(0, defaultCode);
-      }
-
-      // MonacoBinding keeps Monaco and Y.Text in sync
-      // It handles:
-      //   - local edits: Monaco onChange → Y.Text update
-      //   - remote edits: Y.Text observe → Monaco applyEdit
       const monacoEnv = editor.getModel();
       if (!monacoEnv) return;
 
+      // MonacoBinding keeps Monaco and Y.Text in sync
       bindingRef.current = new MonacoBinding(
         yText,
         monacoEnv,
@@ -458,10 +548,10 @@ export const useYjsEditor = ({
 
       // Wire cursor/selection → awareness state
       editor.onDidChangeCursorPosition((e) => {
-        const awareness = awarenessRef.current;
-        if (!awareness) return;
+        const aw = awarenessRef.current;
+        if (!aw) return;
 
-        awareness.setLocalStateField("cursor", {
+        aw.setLocalStateField("cursor", {
           anchor: {
             line:   e.position.lineNumber,
             column: e.position.column,
@@ -475,10 +565,10 @@ export const useYjsEditor = ({
       });
 
       editor.onDidChangeCursorSelection((e) => {
-        const awareness = awarenessRef.current;
-        if (!awareness) return;
+        const aw = awarenessRef.current;
+        if (!aw) return;
         const sel = e.selection;
-        awareness.setLocalStateField("cursor", {
+        aw.setLocalStateField("cursor", {
           anchor: {
             line:   sel.selectionStartLineNumber,
             column: sel.selectionStartColumn,
@@ -490,8 +580,11 @@ export const useYjsEditor = ({
         });
         emitAwareness();
       });
+
+      // Re-apply decorations now that the editor is mounted
+      applyAwarenessDecorations();
     },
-    [defaultCode, emitAwareness]
+    [emitAwareness, applyAwarenessDecorations]
   );
 
   // ── setLanguage: change language (emits to server + updates local state) ──
@@ -533,6 +626,7 @@ export const useYjsEditor = ({
     isSaving,
     isConnected,
     handleEditorMount,
+    remoteProblemId,
     // Expose for presence sidebar
     myColor,
   };

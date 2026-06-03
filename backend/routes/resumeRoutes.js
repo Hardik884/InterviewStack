@@ -84,12 +84,8 @@ router.post("/upload", protect, upload.single("resume"), uploadResume);
 router.get("/history", protect, getResumeHistory);
 
 // GET /api/resume/status/:jobId
-router.get(
-  "/status/:jobId",
-  protect,
-  validateObjectIdParam("jobId"),
-  getResumeStatus
-);
+// NOTE: jobId is a BullMQ job ID (string), NOT a MongoDB ObjectId — no ObjectId validation here.
+router.get("/status/:jobId", protect, getResumeStatus);
 
 // GET /api/resume/:id
 router.get("/:id", protect, validateObjectIdParam("id"), getResumeById);

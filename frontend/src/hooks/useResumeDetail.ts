@@ -6,5 +6,12 @@ export const useResumeDetail = (id?: string) => {
     queryKey: ["resume", id],
     queryFn: () => fetchResumeById(id),
     enabled: Boolean(id),
+    // Poll every 4 seconds while still pending or processing
+    refetchInterval: (query) => {
+      const data = query.state.data as { analysis?: { status?: string } } | undefined;
+      const status = data?.analysis?.status;
+      if (!status) return 4000;
+      return status === "completed" || status === "failed" ? false : 4000;
+    },
   });
 };

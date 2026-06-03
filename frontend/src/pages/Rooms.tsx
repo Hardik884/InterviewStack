@@ -21,14 +21,16 @@ const Rooms = () => {
   const [roomIdError, setRoomIdError] = useState("");
 
   const shareLink = useMemo(
-    () => (roomId ? `${window.location.origin}/rooms/${roomId}` : ""),
+    () => (roomId ? `${window.location.origin}/join/${roomId}` : ""),
     [roomId]
   );
 
   const handleCreate = () => {
     const newId = generateRoomId();
     setRoomId(newId);
-    navigate(`/rooms/${newId}`, { state: { name: name || user?.name } });
+    // Creator is always the interviewer — persist role immediately and go to lobby
+    sessionStorage.setItem(`room:${newId}:role`, "interviewer");
+    navigate(`/lobby/${newId}`, { state: { name: name || user?.name } });
   };
 
   const handleJoin = () => {
@@ -38,7 +40,8 @@ const Rooms = () => {
       return;
     }
     setRoomIdError("");
-    navigate(`/rooms/${trimmed}`, { state: { name: name || user?.name } });
+    // Send joiner to role selection first
+    navigate(`/join/${trimmed}`, { state: { name: name || user?.name } });
   };
 
   const handleCopy = async () => {

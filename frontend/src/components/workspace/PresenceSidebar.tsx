@@ -51,13 +51,13 @@ const roleBadgeClass = (role: string) => {
   switch (role) {
     case "host":
     case "interviewer":
-      return "bg-violet-100 text-violet-700";
+      return "bg-navy/10 text-navy";
     case "candidate":
-      return "bg-sky-100 text-sky-700";
+      return "bg-accent/10 text-accent";
     case "observer":
-      return "bg-slate-100 text-slate-600";
+      return "bg-ink/8 text-ink/60";
     default:
-      return "bg-gray-100 text-gray-600";
+      return "bg-ink/5 text-ink/50";
   }
 };
 

@@ -190,12 +190,15 @@ const registerYjsHandlers = (io, socket) => {
 
       // Compute what the client is missing
       const missingUpdate = Y.encodeStateAsUpdate(doc, sv);
-      const language = doc.getMap("meta").get("language") ?? "javascript";
+      const meta = doc.getMap("meta");
+      const language  = meta.get("language")  ?? "javascript";
+      const problemId = meta.get("problemId") ?? null;
 
       socket.emit("yjs:sync-step2", {
         roomId,
         update: Array.from(missingUpdate),
         language,
+        problemId,
       });
     } catch (err) {
       console.error("[Yjs] sync-step1 error:", err.message);
@@ -261,11 +264,48 @@ const registerYjsHandlers = (io, socket) => {
     }
   };
 
+  // ── problem:set ───────────────────────────────────────────────────────────
+  // Interviewer sets the active problemId. Stored in Y.Map and broadcast to all
+  // room participants so candidates always receive the same problemId.
+  const onProblemSet = async ({ roomId, problemId }) => {
+    if (!roomId || typeof problemId !== "string") return;
+    if (!isAuthorised(socket, roomId)) return;
+
+    try {
+      const { doc } = await getOrCreateDoc(roomId);
+
+      doc.transact(() => {
+        doc.getMap("meta").set("problemId", problemId);
+      }, socket.id);
+
+      // Broadcast to all sockets in room (including sender — so their own
+      // component can react without a separate local state)
+      io.to(roomId).emit("problem:set", { roomId, problemId });
+
+      schedulePersist(roomId, doc);
+    } catch (err) {
+      console.error("[Yjs] problem:set error:", err.message);
+    }
+  };
+
+  // ── run:result ─────────────────────────────────────────────────────────────
+  // Candidate emits this after receiving a run result.
+  // Server relays it to ALL participants in the room so the interviewer sees it.
+  // We do NOT relay submit results here to protect hidden test cases.
+  const onRunResult = ({ roomId, result }) => {
+    if (!roomId || !result || !isAuthorised(socket, roomId)) return;
+    // Broadcast to everyone in the room (including sender so state is consistent)
+    io.to(roomId).emit("run:result", { roomId, result });
+  };
+
   // Wire events
   socket.on("yjs:sync-step1",  onSyncStep1);
   socket.on("yjs:update",      onYjsUpdate);
   socket.on("yjs:awareness",   onYjsAwareness);
   socket.on("language:change", onLanguageChange);
+  socket.on("problem:set",     onProblemSet);
+  socket.on("run:result",      onRunResult);
+
 };
 
 // ─── Called from roomHandlers on join ────────────────────────────────────────

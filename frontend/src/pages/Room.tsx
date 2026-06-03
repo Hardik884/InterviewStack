@@ -34,12 +34,6 @@ const RoomSession = () => {
   const [showPresence, setShowPresence] = useState(true);
   const [localName] = useState(() => location.state?.name || user?.name || "Anonymous");
 
-  // Store role in sessionStorage so InterviewWorkspace can read it.
-  useEffect(() => {
-    if (roomId) {
-      sessionStorage.setItem(`room:${roomId}:role`, "interviewer");
-    }
-  }, [roomId]);
 
   const { data: problemsData } = useProblems({ limit: 5 });
   const recentProblems = problemsData?.problems || [];
@@ -52,12 +46,28 @@ const RoomSession = () => {
     [user]
   );
 
+  // ── Role resolution (read from sessionStorage, default to interviewer) ────
+  const storedRole = useMemo(() => {
+    const stored = sessionStorage.getItem(`room:${roomId}:role`);
+    if (stored === "interviewer" || stored === "host") return "interviewer" as const;
+    if (stored === "candidate") return "candidate" as const;
+    return "interviewer" as const;
+  }, [roomId]);
+
+  // ── Role guard: redirect to role selection if no role stored ────────────
+  useEffect(() => {
+    const stored = sessionStorage.getItem(`room:${roomId}:role`);
+    if (!stored && roomId) {
+      navigate(`/join/${roomId}`, { replace: true });
+    }
+  }, [roomId, navigate]);
+
   // ── Presence (participants, activity, connection status) ──────────────────
   const { participants, activity, connectionStatus: roomStatus } = useInterviewRoom({
     token,
     roomId: roomId || "",
     name: localName,
-    role: "interviewer",
+    role: storedRole,
   });
 
   const { status: connectionStatus, reconnectAttempt } = useConnectionStatus({
@@ -77,12 +87,15 @@ const RoomSession = () => {
     roomId: roomId || "",
     userId: myUserId,
     userName: localName,
-    userRole: "interviewer",
+    userRole: storedRole,
     defaultCode: "// Collaborative scratch pad — changes sync in real-time\n",
   });
 
   const handleStartInterview = (problemId: string) => {
-    navigate(`/interview/${roomId}/${problemId}`);
+    // Store the problemId so InterviewLobby can read it after role is selected
+    if (roomId) sessionStorage.setItem(`room:${roomId}:problemId`, problemId);
+    // Always route through role selection — NEVER skip it
+    navigate(`/join/${roomId}`, { state: { problemId } });
   };
 
   const handleCopyLink = async () => {

@@ -12,6 +12,10 @@ const resumeAnalysisSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    filePath: {
+      type: String,
+      default: null,
+    },
     parsedText: {
       type: String,
       default: "",
