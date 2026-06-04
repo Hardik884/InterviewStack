@@ -37,6 +37,8 @@ import { useSubmissionsByProblem } from "../hooks/useSubmissionsByProblem";
 import { useCreateSubmission } from "../hooks/useCreateSubmission";
 import { useRunSubmission } from "../hooks/useRunSubmission";
 import { getSocket } from "../sockets/socketClient";
+import { useLiveKitCall } from "../hooks/useLiveKitCall";
+import VideoPanel from "../components/workspace/VideoPanel";
 import type * as Monaco from "monaco-editor";
 
 const tabList = ["Description", "Hints", "Discussion", "Submissions"];
@@ -191,6 +193,24 @@ const InterviewWorkspace = () => {
     roomId,
     name: user?.name || "Anonymous",
     role,
+  });
+
+  // ── LiveKit video call ─────────────────────────────────────────────────────
+  const isSoloSession = roomId.startsWith("solo-");
+  const {
+    connectionState: callState,
+    participants: callParticipants,
+    isMuted: callMuted,
+    isCameraOff: callCameraOff,
+    error: callError,
+    toggleMic,
+    toggleCamera,
+    leaveCall,
+    reconnect: reconnectCall,
+  } = useLiveKitCall({
+    roomId,
+    role,
+    enabled: !isSoloSession,
   });
 
   // ── Connection status (for banner) ────────────────────────────────────────
@@ -790,6 +810,21 @@ const InterviewWorkspace = () => {
           </div>
         }
       />
+
+      {/* Video call panel — sits between the header and workspace grid */}
+      {!isSoloSession && (
+        <VideoPanel
+          participants={callParticipants}
+          connectionState={callState}
+          isMuted={callMuted}
+          isCameraOff={callCameraOff}
+          error={callError}
+          onToggleMic={toggleMic}
+          onToggleCamera={toggleCamera}
+          onLeave={leaveCall}
+          onReconnect={reconnectCall}
+        />
+      )}
 
       <WorkspaceLayout
         left={leftPanel}

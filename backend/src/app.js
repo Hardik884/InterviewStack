@@ -6,6 +6,7 @@ const submissionRoutes = require("../routes/submissionRoutes");
 const analyticsRoutes = require("../analytics/analyticsRoutes");
 const resumeRoutes = require("../routes/resumeRoutes");
 const testRoutes = require("../routes/testRoutes");
+const livekitRoutes = require("../routes/livekitRoutes");
 const { notFound, errorHandler } = require("../middleware/errorHandler");
 
 const app = express();
@@ -38,6 +39,7 @@ app.use("/api/submissions", submissionRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/resume", resumeRoutes);
 app.use("/api/test", testRoutes);
+app.use("/api/livekit", livekitRoutes);
 
 // ── Error handling ───────────────────────────────────────────────────────────
 app.use(notFound);
