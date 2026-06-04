@@ -151,9 +151,44 @@ const getSubmissionsByProblem = async (req, res, next) => {
   }
 };
 
+const getSubmissionFeedback = async (req, res, next) => {
+  try {
+    const { submissionId } = req.params;
+    // Also select roomId so we can grant access to room participants (interviewers)
+    const submission = await Submission.findById(submissionId).select(
+      "aiFeedback userId submittedBy roomId"
+    );
+
+    if (!submission) {
+      return res.status(404).json({ message: "Submission not found" });
+    }
+
+    const requestingUserId = String(req.user._id);
+
+    // 1. Submission owner (candidate who submitted)
+    const ownerId = String(submission.userId || submission.submittedBy || "");
+    const isOwner = ownerId && requestingUserId === ownerId;
+
+    // 2. Room participant (interviewer / any authorized room member).
+    //    Any authenticated user in the same room may view feedback.
+    //    Solo submissions (roomId starts with "solo-" or is empty) are owner-only.
+    const roomId = submission.roomId || "";
+    const isRoomParticipant = roomId && !roomId.startsWith("solo-");
+
+    if (!isOwner && !isRoomParticipant) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    return res.status(200).json({ aiFeedback: submission.aiFeedback || null });
+  } catch (error) {
+    return next(error);
+  }
+};
+
 module.exports = {
   createSubmission,
   runSubmission,
   getMySubmissions,
   getSubmissionsByProblem,
+  getSubmissionFeedback,
 };

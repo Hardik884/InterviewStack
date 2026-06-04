@@ -28,6 +28,7 @@ import TagChip from "../components/TagChip";
 import WorkspaceLayout from "../components/workspace/WorkspaceLayout";
 import ReconnectBanner from "../components/workspace/ReconnectBanner";
 import PresenceSidebar from "../components/workspace/PresenceSidebar";
+import AIFeedbackPanel from "../components/workspace/AIFeedbackPanel";
 import { useAuth } from "../hooks/useAuth";
 import { useProblem } from "../hooks/useProblem";
 import { useInterviewRoom } from "../hooks/useInterviewRoom";
@@ -36,12 +37,13 @@ import { useConnectionStatus } from "../hooks/useConnectionStatus";
 import { useSubmissionsByProblem } from "../hooks/useSubmissionsByProblem";
 import { useCreateSubmission } from "../hooks/useCreateSubmission";
 import { useRunSubmission } from "../hooks/useRunSubmission";
+import { useSubmissionFeedback } from "../hooks/useSubmissionFeedback";
 import { getSocket } from "../sockets/socketClient";
 import { useLiveKitCall } from "../hooks/useLiveKitCall";
 import VideoPanel from "../components/workspace/VideoPanel";
 import type * as Monaco from "monaco-editor";
 
-const tabList = ["Description", "Hints", "Discussion", "Submissions"];
+const tabList = ["Description", "Hints", "Discussion", "Submissions", "AI Feedback"];
 const outputTabs = ["Output", "Error", "Test Cases"];
 
 type ExampleCase = {
@@ -187,6 +189,21 @@ const InterviewWorkspace = () => {
   const isSubmitting       = submissionMutation.isPending;
   const isRunning          = runMutation.isPending;
 
+  // ── Selected submission for AI feedback ──────────────────────────────────
+  const [selectedSubmissionId, setSelectedSubmissionId] = useState<string | null>(null);
+
+  // Auto-select most recent completed submission when list loads/updates
+  useEffect(() => {
+    const firstCompleted = submissions.find((s) => s.status === "completed");
+    if (firstCompleted && !selectedSubmissionId) {
+      setSelectedSubmissionId(firstCompleted._id);
+    }
+  }, [submissions, selectedSubmissionId]);
+
+  const { data: feedbackData, isLoading: feedbackLoading } = useSubmissionFeedback(
+    selectedSubmissionId
+  );
+
   // ── Room presence (participants, activity, connection status) ─────────────
   const { participants, activity, connectionStatus: roomConnectionStatus } = useInterviewRoom({
     token,
@@ -314,10 +331,17 @@ const InterviewWorkspace = () => {
       runtime?: number | null;
       memory?: number | null;
       executionTime?: number | null;
+      submissionId?: string;
     }) => {
       if (payload?.problemId === effectiveProblemId) {
         queryClient.invalidateQueries({ queryKey: ["submissions", effectiveProblemId] });
         setSubmitStatus("idle");
+
+        // Auto-select the new submission for AI feedback
+        if (payload.submissionId && (payload.status === "completed" || payload.status === "failed")) {
+          setSelectedSubmissionId(payload.submissionId);
+          setActiveTab("AI Feedback");
+        }
 
         // Share submission execution output room-wide so interviewer sees results
         if (payload.status === "completed" || payload.status === "failed") {
@@ -354,6 +378,25 @@ const InterviewWorkspace = () => {
     socket.on("run:result", handler);
     return () => { socket.off("run:result", handler); };
   }, [roomId]);
+
+  // ── AI Feedback real-time update ──────────────────────────────────────────
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+    const handler = (payload: {
+      submissionId?: string;
+      problemId?: string;
+      aiFeedback?: unknown;
+    }) => {
+      if (payload?.submissionId) {
+        // Invalidate the feedback query so it re-fetches fresh data
+        queryClient.invalidateQueries({ queryKey: ["feedback", payload.submissionId] });
+      }
+    };
+    socket.on("feedback:update", handler);
+    return () => { socket.off("feedback:update", handler); };
+  }, [queryClient]);
+
 
   // ── Poll while submission pending ──────────────────────────────────────────
   useEffect(() => {
@@ -507,7 +550,11 @@ const InterviewWorkspace = () => {
                 {submissions.slice(0, 6).map((submission: SubmissionItem) => (
                   <div
                     key={submission._id}
-                    className="grid grid-cols-[1.2fr_1fr_1fr_1fr_1fr_1fr] gap-2 border-b border-ink/10 px-4 py-3 text-xs"
+                    onClick={() => {
+                      setSelectedSubmissionId(submission._id);
+                      setActiveTab("AI Feedback");
+                    }}
+                    className="grid cursor-pointer grid-cols-[1.2fr_1fr_1fr_1fr_1fr_1fr] gap-2 border-b border-ink/10 px-4 py-3 text-xs hover:bg-indigo-50/30 transition-colors"
                   >
                     <span className={`w-fit rounded-full border px-2 py-0.5 ${statusClass(submission.status)}`}>
                       {submission.status || "queued"}
@@ -524,6 +571,25 @@ const InterviewWorkspace = () => {
               </div>
             ) : (
               <EmptyState title="No submissions yet" description="Run or submit code to track attempts." />
+            )}
+            <p className="text-[10px] text-ink/40 text-center">
+              Click a submission to view AI Feedback →
+            </p>
+          </div>
+        )}
+        {activeTab === "AI Feedback" && (
+          <div className="space-y-3">
+            {selectedSubmissionId ? (
+              <AIFeedbackPanel
+                feedback={feedbackData?.aiFeedback}
+                isLoading={feedbackLoading}
+                role={role}
+              />
+            ) : (
+              <EmptyState
+                title="No submission selected"
+                description="Submit code and click a submission row to view AI feedback."
+              />
             )}
           </div>
         )}

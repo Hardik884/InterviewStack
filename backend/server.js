@@ -6,7 +6,7 @@ const app = require("./src/app");
 const connectDB = require("./config/db");
 const initSocket = require("./sockets/socketHandler");
 const { connectRedis } = require("./config/redis");
-const { registerSubmissionQueueEvents } = require("./services/submissionQueueEvents");
+const { registerSubmissionQueueEvents, registerAiFeedbackQueueEvents } = require("./services/submissionQueueEvents");
 const { ensureUploadDirectories } = require("./config/uploads");
 
 // Load environment variables from .env
@@ -67,12 +67,14 @@ const startServer = async () => {
     const server = http.createServer(app);
     const io = initSocket(server);
     registerSubmissionQueueEvents(io);
+    registerAiFeedbackQueueEvents(io);
 
     // ── Spawn BullMQ workers ──────────────────────────────────────────────────
     // Workers run as child processes so they can be restarted independently.
     // Both workers share the same .env loaded above.
-    spawnWorker(path.resolve(__dirname, "workers/resumeWorker.js"),     "ResumeWorker");
-    spawnWorker(path.resolve(__dirname, "workers/submissionWorker.js"), "SubmissionWorker");
+    spawnWorker(path.resolve(__dirname, "workers/resumeWorker.js"),      "ResumeWorker");
+    spawnWorker(path.resolve(__dirname, "workers/submissionWorker.js"),  "SubmissionWorker");
+    spawnWorker(path.resolve(__dirname, "workers/aiFeedbackWorker.js"),  "AiFeedbackWorker");
 
     server.listen(PORT, () => {
       console.log(`[Server] ✅ Server running on port ${PORT}`);

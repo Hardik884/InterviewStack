@@ -4,6 +4,7 @@ const {
   runSubmission,
   getMySubmissions,
   getSubmissionsByProblem,
+  getSubmissionFeedback,
 } = require("../controllers/submissionController");
 const { protect } = require("../middleware/authMiddleware");
 const {
@@ -31,4 +32,13 @@ router.get(
   getSubmissionsByProblem
 );
 
+// GET /api/submissions/:submissionId/feedback
+router.get(
+  "/:submissionId/feedback",
+  protect,
+  validateObjectIdParam("submissionId"),
+  getSubmissionFeedback
+);
+
 module.exports = router;
+

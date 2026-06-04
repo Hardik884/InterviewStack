@@ -71,8 +71,102 @@ const analyzeResume = async (resumeText) => {
   return parsed;
 };
 
+/**
+ * Build interview feedback prompt for Gemini.
+ * Keeps token usage low by being concise and structured.
+ */
+const buildFeedbackPrompt = ({ title, description, code, language, verdict, stdout, stderr }) => {
+  const codeSnippet = sanitizeInput(code, 6000);
+  const descSnippet = sanitizeInput(description, 1500);
+  const stdoutSnippet = sanitizeInput(stdout, 500);
+  const stderrSnippet = sanitizeInput(stderr, 500);
+
+  return [
+    "You are an expert software engineering interviewer.",
+    "Analyze the candidate's solution and return ONLY valid JSON — no markdown fences, no extra text.",
+    "",
+    "The JSON must have EXACTLY these keys:",
+    "  score          : integer 1-10 (overall rating)",
+    "  problemSolving : string (1-2 sentences on their approach)",
+    "  codeQuality    : string (1-2 sentences on readability/structure)",
+    "  timeComplexity : string (e.g. 'O(n log n) — good use of sorting')",
+    "  spaceComplexity: string (e.g. 'O(n) — auxiliary hash map')",
+    "  strengths      : array of short strings (2-4 items)",
+    "  weaknesses     : array of short strings (1-3 items)",
+    "  optimizationSuggestions: array of short strings (1-3 items)",
+    "  interviewerNotes: string (private note for the interviewer, 1-2 sentences)",
+    "",
+    `Problem: ${title}`,
+    `Description: ${descSnippet}`,
+    `Language: ${language}`,
+    `Verdict: ${verdict}`,
+    stdoutSnippet ? `Stdout: ${stdoutSnippet}` : "",
+    stderrSnippet ? `Stderr/Error: ${stderrSnippet}` : "",
+    "",
+    "Candidate Code:",
+    codeSnippet,
+  ]
+    .filter(Boolean)
+    .join("\n");
+};
+
+/**
+ * Generate structured interview feedback for a submission using Gemini.
+ * Never throws — returns null on failure so the caller can handle gracefully.
+ */
+const generateInterviewFeedback = async ({
+  title,
+  description,
+  code,
+  language,
+  verdict,
+  stdout = "",
+  stderr = "",
+}) => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    console.error("[AI Feedback] GEMINI_API_KEY not set");
+    return null;
+  }
+
+  try {
+    console.log("[AI Feedback] Building prompt...");
+    const prompt = buildFeedbackPrompt({ title, description, code, language, verdict, stdout, stderr });
+
+    const client = new GoogleGenerativeAI(apiKey);
+    const model = client.getGenerativeModel({ model: "gemini-3.1-flash-lite" });
+
+    console.log(`[AI Feedback] Sending ${prompt.length} chars to Gemini...`);
+    const result = await model.generateContent(prompt);
+    const responseText = result.response.text();
+    console.log("[AI Feedback] Received response, parsing...");
+
+    const parsed = parseAiJson(responseText);
+
+    // Validate required fields
+    const required = [
+      "score", "problemSolving", "codeQuality", "timeComplexity",
+      "spaceComplexity", "strengths", "weaknesses",
+      "optimizationSuggestions", "interviewerNotes",
+    ];
+    for (const key of required) {
+      if (parsed[key] === undefined) {
+        console.warn(`[AI Feedback] Missing field: ${key}`);
+      }
+    }
+
+    console.log("[AI Feedback] Feedback generated. Score:", parsed.score);
+    return parsed;
+  } catch (err) {
+    console.error("[AI Feedback] Generation failed:", err.message);
+    return null;
+  }
+};
+
 module.exports = {
   analyzeResume,
   sanitizeInput,
   buildResumePrompt,
+  generateInterviewFeedback,
 };
+

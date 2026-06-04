@@ -6,6 +6,7 @@ const Submission = require("../models/Submission");
 const Problem = require("../models/Problem");
 const { executeAgainstTests } = require("../services/codeExecutionService");
 const { SUBMISSION_QUEUE_NAME } = require("../queues/constants");
+const aiFeedbackQueue = require("../queues/aiFeedbackQueue");
 
 dotenv.config();
 
@@ -105,16 +106,46 @@ const startWorker = async () => {
       const lastResult = results[results.length - 1] || {};
 
       await Submission.findByIdAndUpdate(submissionId, {
-        status: "completed",
-        verdict,
-        runtime: totalRuntimeMs || null,
-        executionTime: totalRuntimeMs || null,
-        memory: lastResult.memory || null,
-        stdout: lastResult.stdout || "",
-        stderr: lastResult.stderr || lastResult.compileOutput || "",
+        $set: {
+          status: "completed",
+          verdict,
+          runtime: totalRuntimeMs || null,
+          executionTime: totalRuntimeMs || null,
+          memory: lastResult.memory || null,
+          stdout: lastResult.stdout || "",
+          stderr: lastResult.stderr || lastResult.compileOutput || "",
+          // Always write aiFeedback as a full object — dot-notation fails when
+          // the field is null (legacy documents) and MongoDB cannot create
+          // nested fields inside a null element.
+          aiFeedback: {
+            score: null,
+            problemSolving: "",
+            codeQuality: "",
+            timeComplexity: "",
+            spaceComplexity: "",
+            strengths: [],
+            weaknesses: [],
+            optimizationSuggestions: [],
+            interviewerNotes: "",
+            generatedAt: null,
+            status: "pending",
+          },
+        },
       });
 
       console.log(`[Worker] Submission ${submissionId} → ${verdict}`);
+
+      // Enqueue AI feedback — fire and forget, never block submission.
+      try {
+        await aiFeedbackQueue.add("ai-feedback", {
+          submissionId: String(submissionId),
+          problemId: String(submission.problemId),
+        });
+        console.log(`[Worker] AI feedback job queued for submission ${submissionId}`);
+      } catch (queueErr) {
+        console.error(`[Worker] Failed to queue AI feedback job: ${queueErr.message}`);
+      }
+
       return { status: "completed", verdict };
     },
     {

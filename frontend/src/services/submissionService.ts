@@ -33,3 +33,9 @@ export const fetchMySubmissions = async () => {
   const response = await api.get("/api/submissions/me");
   return response.data;
 };
+
+export const fetchSubmissionFeedback = async (submissionId: string) => {
+  const response = await api.get(`/api/submissions/${submissionId}/feedback`);
+  return response.data;
+};
+

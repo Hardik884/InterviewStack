@@ -7,8 +7,9 @@
     "dev": "nodemon server.js",
     "worker:submission": "node workers/submissionWorker.js",
     "worker:resume": "node workers/resumeWorker.js",
+    "worker:ai-feedback": "node workers/aiFeedbackWorker.js",
     "worker": "node workers/submissionWorker.js",
-    "dev:all": "concurrently -k \"npm run dev\" \"npm run worker:submission\" \"npm run worker:resume\"",
+    "dev:all": "concurrently -k \"npm run dev\" \"npm run worker:submission\" \"npm run worker:resume\" \"npm run worker:ai-feedback\"",
     "seed:problems": "node scripts/seedProblems.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
