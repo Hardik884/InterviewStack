@@ -4,7 +4,7 @@ const USER_KEY = "auth_user";
 export const getToken = () =>
   sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY);
 
-export const setToken = (token) => {
+export const setToken = (token: string) => {
   sessionStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(TOKEN_KEY, token);
 };
@@ -19,7 +19,7 @@ export const getStoredUser = () => {
   return raw ? JSON.parse(raw) : null;
 };
 
-export const setStoredUser = (user) => {
+export const setStoredUser = (user: unknown) => {
   sessionStorage.setItem(USER_KEY, JSON.stringify(user));
 };
 

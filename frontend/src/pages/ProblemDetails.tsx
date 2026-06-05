@@ -4,14 +4,14 @@ import Editor from "@monaco-editor/react";
 import { motion } from "framer-motion";
 import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
-import Badge from "../components/ui/Badge";
+
 import SectionHeader from "../components/ui/SectionHeader";
 import Loader from "../components/ui/Loader";
 import DifficultyBadge from "../components/DifficultyBadge";
 import TagChip from "../components/TagChip";
 import { useProblemBySlug } from "../hooks/useProblemBySlug";
 import { useRunSubmission } from "../hooks/useRunSubmission";
-import { useCreateSubmission } from "../hooks/useCreateSubmission";
+
 import { useAuth } from "../hooks/useAuth";
 import toast from "react-hot-toast";
 
@@ -45,14 +45,14 @@ const ProblemDetails = () => {
 
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [runStatus, setRunStatus] = useState<"idle" | "running" | "done" | "error">("idle");
-  const [submitStatus, setSubmitStatus] = useState<"idle" | "queuing" | "queued">("idle");
+  const [submitStatus] = useState<"idle" | "queuing" | "queued">("idle");
 
   const codeRef = useRef("// Start coding here\n");
   const [code, setCode] = useState("// Start coding here\n");
 
   const problem = data?.problem;
   const runMutation = useRunSubmission();
-  const submitMutation = useCreateSubmission();
+
 
   // Sync starter code when problem/language changes
   useEffect(() => {

@@ -4,7 +4,7 @@ import { fetchResumeById } from "../services/resumeService";
 export const useResumeDetail = (id?: string) => {
   return useQuery({
     queryKey: ["resume", id],
-    queryFn: () => fetchResumeById(id),
+    queryFn: () => id ? fetchResumeById(id) : Promise.reject("No id"),
     enabled: Boolean(id),
     // Poll every 4 seconds while still pending or processing
     refetchInterval: (query) => {

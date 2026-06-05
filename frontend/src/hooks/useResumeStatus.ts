@@ -4,7 +4,7 @@ import { fetchResumeStatus } from "../services/resumeService";
 export const useResumeStatus = (jobId?: string) => {
   return useQuery({
     queryKey: ["resume-status", jobId],
-    queryFn: () => fetchResumeStatus(jobId),
+    queryFn: () => jobId ? fetchResumeStatus(jobId) : Promise.reject("No jobId"),
     enabled: Boolean(jobId),
     refetchInterval: (query) => {
       const data = query.state.data as { status?: string } | undefined;

@@ -1,4 +1,4 @@
-import { createContext, useEffect, useMemo, useState } from "react";
+import { createContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { getCurrentUser, loginUser, registerUser } from "../services/authService";
 import { disconnectSocket } from "../sockets/socketClient";
 import {
@@ -10,9 +10,19 @@ import {
   clearStoredUser,
 } from "../utils/storage";
 
-export const AuthContext = createContext(null);
+export interface AuthContextType {
+  token: string | null;
+  user: Record<string, unknown> | null;
+  loading: boolean;
+  login: (payload: Record<string, unknown>) => Promise<void>;
+  register: (payload: Record<string, unknown>) => Promise<void>;
+  logout: () => void;
+  isAuthenticated: boolean;
+}
 
-export const AuthProvider = ({ children }) => {
+export const AuthContext = createContext<AuthContextType | null>(null);
+
+export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [token, setTokenState] = useState(getToken());
   const [user, setUser] = useState(getStoredUser());
   const [loading, setLoading] = useState(true);
@@ -56,7 +66,7 @@ export const AuthProvider = ({ children }) => {
   }, [token]);
 
   useEffect(() => {
-    const handleStorage = (event) => {
+    const handleStorage = (event: StorageEvent) => {
       if (event.key !== "auth_token") return;
       const sessionToken = sessionStorage.getItem("auth_token");
       const nextToken = event.newValue;
@@ -76,7 +86,7 @@ export const AuthProvider = ({ children }) => {
     return () => window.removeEventListener("storage", handleStorage);
   }, []);
 
-  const handleAuthSuccess = (data) => {
+  const handleAuthSuccess = (data: { token: string; user: Record<string, unknown> }) => {
     disconnectSocket();
     setToken(data.token);
     setStoredUser(data.user);
@@ -84,12 +94,12 @@ export const AuthProvider = ({ children }) => {
     setUser(data.user);
   };
 
-  const login = async (payload) => {
+  const login = async (payload: Record<string, unknown>) => {
     const data = await loginUser(payload);
     handleAuthSuccess(data);
   };
 
-  const register = async (payload) => {
+  const register = async (payload: Record<string, unknown>) => {
     const data = await registerUser(payload);
     handleAuthSuccess(data);
   };

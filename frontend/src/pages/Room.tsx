@@ -5,7 +5,7 @@
  * Legacy useRoomSocket removed.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import Editor from "@monaco-editor/react";
 import Button from "../components/ui/Button";
@@ -21,7 +21,7 @@ import { useProblems } from "../hooks/useProblems";
 import { useConnectionStatus } from "../hooks/useConnectionStatus";
 import { getSocket } from "../sockets/socketClient";
 import toast from "react-hot-toast";
-import type * as Monaco from "monaco-editor";
+
 
 const RoomSession = () => {
   const { roomId } = useParams<{ roomId: string }>();
@@ -36,7 +36,7 @@ const RoomSession = () => {
 
 
   const { data: problemsData } = useProblems({ limit: 5 });
-  const recentProblems = problemsData?.problems || [];
+  const recentProblems: any[] = (problemsData as any)?.problems || [];
 
   const myUserId = useMemo(
     () =>
@@ -63,7 +63,7 @@ const RoomSession = () => {
   }, [roomId, navigate]);
 
   // ── Presence (participants, activity, connection status) ──────────────────
-  const { participants, activity, connectionStatus: roomStatus } = useInterviewRoom({
+  const { participants, activity } = useInterviewRoom({
     token,
     roomId: roomId || "",
     name: localName,
@@ -76,7 +76,6 @@ const RoomSession = () => {
 
   // ── Yjs CRDT Editor ───────────────────────────────────────────────────────
   const {
-    editorRef,
     language,
     setLanguage,
     theme,
@@ -107,7 +106,7 @@ const RoomSession = () => {
     return <p className="text-sm text-ink/60">Room not found.</p>;
   }
 
-  const reconnectAttemptNum = connectionStatus === "reconnecting" ? 1 : 0;
+
 
   return (
     <div className="space-y-4">
@@ -228,7 +227,7 @@ const RoomSession = () => {
           {recentProblems.length > 0 && (
             <Card title="Start with a problem">
               <div className="space-y-2 text-xs">
-                {recentProblems.slice(0, 4).map((p) => (
+                {recentProblems.slice(0, 4).map((p: any) => (
                   <button
                     key={p._id}
                     type="button"

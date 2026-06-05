@@ -1,7 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { fetchProblems } from "../services/problemService";
 
-type ProblemQuery = {
+export type ProblemQuery = {
   page?: number;
   limit?: number;
   difficulty?: string;
@@ -14,6 +14,6 @@ export const useProblems = (params: ProblemQuery) => {
   return useQuery({
     queryKey: ["problems", params],
     queryFn: () => fetchProblems(params),
-    keepPreviousData: true,
+    placeholderData: keepPreviousData,
   });
 };

@@ -4,7 +4,7 @@ type ProgressBarProps = {
 
 const ProgressBar = ({ value }: ProgressBarProps) => {
   const step = Math.max(0, Math.min(100, Math.round(value / 10) * 10));
-  const widthClasses = {
+  const widthClasses: Record<number, string> = {
     0: "w-0",
     10: "w-1/12",
     20: "w-2/12",

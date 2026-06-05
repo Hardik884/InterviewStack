@@ -1,4 +1,4 @@
-export const formatDate = (value) => {
+export const formatDate = (value: string | number | Date) => {
   if (!value) {
     return "";
   }
@@ -10,7 +10,7 @@ export const formatDate = (value) => {
   }).format(date);
 };
 
-export const formatNumber = (value) => {
+export const formatNumber = (value: string | number) => {
   const number = Number(value || 0);
   return new Intl.NumberFormat("en-US").format(number);
 };

@@ -13,7 +13,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Room,
   RoomEvent,
-  ConnectionState,
   LocalParticipant,
   RemoteParticipant,
   Track,

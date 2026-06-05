@@ -12,7 +12,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { motion } from "framer-motion";
+import { motion, type Variants } from "framer-motion";
 import Card from "../components/ui/Card";
 import StatCard from "../components/ui/StatCard";
 import Skeleton from "../components/ui/Skeleton";
@@ -68,12 +68,12 @@ const verdictVariant = (verdict: string) => {
   return "default";
 };
 
-const stagger = {
+const stagger: Variants = {
   hidden: {},
   visible: { transition: { staggerChildren: 0.07 } },
 };
 
-const fadeUp = {
+const fadeUp: Variants = {
   hidden: { opacity: 0, y: 14 },
   visible: { opacity: 1, y: 0, transition: { duration: 0.28, ease: "easeOut" } },
 };
@@ -193,7 +193,7 @@ const Dashboard = () => {
 
         <Card title="Leaderboard" subtitle="Top performers">
           <div className="space-y-3">
-            {(leaderboardData?.leaderboard || []).map((entry, i) => (
+            {(leaderboardData?.leaderboard || []).map((entry: Record<string, unknown> & { userId: string, rank: number, name: string, solvedCount: number }, i: number) => (
               <motion.div
                 key={String(entry.userId)}
                 initial={{ opacity: 0, x: -8 }}
@@ -297,7 +297,7 @@ const Dashboard = () => {
           />
         ) : (
           <div className="divide-y divide-ink/5">
-            {recent.map((activity, i) => (
+            {recent.map((activity: Record<string, unknown> & { _id: string, problemId?: { title: string }, language: string, createdAt: string, verdict: string }, i: number) => (
               <motion.div
                 key={String(activity._id)}
                 initial={{ opacity: 0 }}

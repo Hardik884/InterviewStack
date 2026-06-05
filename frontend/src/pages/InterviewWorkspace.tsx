@@ -77,14 +77,6 @@ const normalizeOutput = (value?: string) =>
     .replace(/[ \t]+\n/g, "\n")
     .trim();
 
-const resolveStarterCode = (
-  value: string | Record<string, string> | undefined,
-  lang: string
-): string => {
-  if (!value) return "// Start coding\n";
-  if (typeof value === "string") return value;
-  return value[lang] || value.javascript || "// Start coding\n";
-};
 
 const InterviewWorkspace = () => {
   const { roomId = "", problemId = "" } = useParams();
@@ -205,7 +197,7 @@ const InterviewWorkspace = () => {
   );
 
   // ── Room presence (participants, activity, connection status) ─────────────
-  const { participants, activity, connectionStatus: roomConnectionStatus } = useInterviewRoom({
+  const { participants, activity } = useInterviewRoom({
     token,
     roomId,
     name: user?.name || "Anonymous",

@@ -1,6 +1,6 @@
 import api from "./api";
 
-export const uploadResume = async ({ file, onProgress }) => {
+export const uploadResume = async ({ file, onProgress }: { file: File; onProgress?: (percent: number) => void }) => {
   const formData = new FormData();
   formData.append("resume", file);
 
@@ -24,12 +24,12 @@ export const fetchResumeHistory = async () => {
   return response.data;
 };
 
-export const fetchResumeById = async (id) => {
+export const fetchResumeById = async (id: string) => {
   const response = await api.get(`/api/resume/${id}`);
   return response.data;
 };
 
-export const fetchResumeStatus = async (jobId) => {
+export const fetchResumeStatus = async (jobId: string) => {
   const response = await api.get(`/api/resume/status/${jobId}`);
   return response.data;
 };

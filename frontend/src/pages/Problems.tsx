@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { motion } from "framer-motion";
+import { motion, type Variants } from "framer-motion";
 import Card from "../components/ui/Card";
 import Input from "../components/ui/Input";
 import Pagination from "../components/ui/Pagination";
@@ -19,12 +19,12 @@ const SORTS = [
   { value: "difficulty", label: "Difficulty" },
 ];
 
-const stagger = {
+const stagger: Variants = {
   hidden: {},
   visible: { transition: { staggerChildren: 0.06 } },
 };
 
-const fadeUp = {
+const fadeUp: Variants = {
   hidden: { opacity: 0, y: 10 },
   visible: { opacity: 1, y: 0, transition: { duration: 0.22, ease: "easeOut" } },
 };
@@ -50,7 +50,8 @@ const Problems = () => {
     [page, difficulty, tags, debouncedSearch, sort]
   );
 
-  const { data, isLoading, isError, refetch } = useProblems(params);
+  const { data: rawData, isLoading, isError, refetch } = useProblems(params);
+  const data = rawData as { problems?: any[]; total?: number; page?: number; totalPages?: number } | undefined;
   const problems = data?.problems || [];
 
   const handleStartInterview = (problem: { _id: string }) => {
@@ -175,7 +176,7 @@ const Problems = () => {
           animate="visible"
           className="space-y-3"
         >
-          {problems.map((problem) => (
+          {problems.map((problem: any) => (
             <motion.div
               key={problem._id}
               variants={fadeUp}

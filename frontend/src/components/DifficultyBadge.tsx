@@ -1,7 +1,7 @@
 import { cn } from "../utils/cn";
 
-const DifficultyBadge = ({ value }) => {
-  const styles = {
+const DifficultyBadge = ({ value }: { value: string }) => {
+  const styles: Record<string, string> = {
     easy: "bg-emerald-100 text-emerald-700",
     medium: "bg-amber-100 text-amber-700",
     hard: "bg-rose-100 text-rose-700",

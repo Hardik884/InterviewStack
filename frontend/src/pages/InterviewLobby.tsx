@@ -13,7 +13,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, type Variants } from "framer-motion";
 import { useAuth } from "../hooks/useAuth";
 import { useInterviewRoom } from "../hooks/useInterviewRoom";
 import { useProblems } from "../hooks/useProblems";
@@ -33,7 +33,7 @@ const difficultyColor: Record<string, string> = {
   Hard:   "text-rose-600 bg-rose-50 border-rose-200",
 };
 
-const cardVariants = {
+const cardVariants: Variants = {
   hidden:  { opacity: 0, y: 16 },
   visible: (i: number) => ({
     opacity: 1,
@@ -78,7 +78,7 @@ const InterviewLobby = () => {
 
   // ── Problem picker (interviewer only) ────────────────────────────────────
   const { data: problemsData } = useProblems({ limit: 50 });
-  const problems: Problem[] = problemsData?.problems || [];
+  const problems: Problem[] = (problemsData as { problems?: Problem[] })?.problems || [];
   const [selectedProblemId, setSelectedProblemId] = useState("");
   const [search, setSearch] = useState("");
   const [isReady, setIsReady] = useState(false);
