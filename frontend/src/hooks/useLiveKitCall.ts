@@ -122,8 +122,12 @@ export const useLiveKitCall = ({ roomId, role, enabled = true }: UseLiveKitCallA
       room.on(RoomEvent.TrackUnmuted,            refreshParticipants);
 
       await room.connect(wsUrl, token);
-      // Enable camera + mic by default.
-      await room.localParticipant.enableCameraAndMicrophone();
+      // Enable camera + mic by default (can fail on mobile without user gesture).
+      try {
+        await room.localParticipant.enableCameraAndMicrophone();
+      } catch (mediaErr) {
+        console.warn("[LiveKit] Auto-enable media failed, continuing without media:", mediaErr);
+      }
       refreshParticipants();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to connect to call";

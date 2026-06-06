@@ -122,6 +122,7 @@ const InterviewWorkspace = () => {
     toggleTheme,
     resetCode,
     isSaving,
+    isConnected,
     handleEditorMount,
     remoteProblemId,
   } = useYjsEditor({
@@ -147,17 +148,17 @@ const InterviewWorkspace = () => {
   // ── Effective problemId: URL param takes precedence, fall back to Yjs meta ─
   const effectiveProblemId = problemId || remoteProblemId || "";
 
-  // Emit problem:set once on mount so all participants receive the problemId
+  // Emit problem:set when connected so all participants receive the problemId
   // (interviewer navigates here with a URL problemId; candidate may not have it)
   useEffect(() => {
-    if (!problemId || !roomId) return;
+    if (!problemId || !roomId || !isConnected) return;
     const socket = getSocket();
     if (socket?.connected) {
       socket.emit("problem:set", { roomId, problemId });
     }
     // Also store locally so candidates can navigate to it from the lobby
     sessionStorage.setItem(`room:${roomId}:problemId`, problemId);
-  }, [problemId, roomId]);
+  }, [problemId, roomId, isConnected]);
 
   const { data, isLoading } = useProblem(effectiveProblemId);
   const problem = data?.problem;
