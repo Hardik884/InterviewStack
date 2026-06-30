@@ -4,7 +4,7 @@ const User = require("../models/User");
 
 const BCRYPT_ROUNDS = 12; // Increased from 10 for better security
 
-const signToken = (userId) => {
+const signToken = (user) => {
   const secret = process.env.JWT_SECRET;
   const expiresIn = process.env.JWT_EXPIRES_IN || "7d";
 
@@ -12,7 +12,11 @@ const signToken = (userId) => {
     throw new Error("JWT_SECRET is not configured");
   }
 
-  return jwt.sign({ id: String(userId) }, secret, { expiresIn });
+  return jwt.sign(
+    { id: String(user._id), name: user.name, role: user.role || "candidate" },
+    secret,
+    { expiresIn }
+  );
 };
 
 /**
@@ -52,12 +56,12 @@ const registerUser = async (req, res, next) => {
       password: hashedPassword,
     });
 
-    const token = signToken(user._id);
+    const token = signToken(user);
 
     return res.status(201).json({
       message: "Account created successfully",
       token,
-      user: { id: user._id, name: user.name, email: user.email },
+      user: { id: user._id, name: user.name, email: user.email, role: user.role },
     });
   } catch (error) {
     return next(error);
@@ -90,12 +94,12 @@ const loginUser = async (req, res, next) => {
       return res.status(401).json({ message: "Invalid email or password" });
     }
 
-    const token = signToken(user._id);
+    const token = signToken(user);
 
     return res.status(200).json({
       message: "Login successful",
       token,
-      user: { id: user._id, name: user.name, email: user.email },
+      user: { id: user._id, name: user.name, email: user.email, role: user.role },
     });
   } catch (error) {
     return next(error);
@@ -113,7 +117,7 @@ const getCurrentUser = async (req, res) => {
   }
 
   return res.status(200).json({
-    user: { id: user._id, name: user.name, email: user.email },
+    user: { id: user._id, name: user.name, email: user.email, role: user.role },
   });
 };
 

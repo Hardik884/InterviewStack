@@ -60,6 +60,10 @@ export const useInterviewRoom = ({
   const [participants, setParticipants]     = useState<Participant[]>([]);
   const [activity, setActivity]             = useState<RoomActivity[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("offline");
+  // `joined` becomes true once the server confirms membership via room:snapshot.
+  // Downstream consumers (LiveKit) gate token requests on this so the server
+  // has persisted membership before a token is requested (avoids a race).
+  const [joined, setJoined] = useState(false);
 
   const hasJoined = useRef(false);
 
@@ -83,6 +87,7 @@ export const useInterviewRoom = ({
         reason === "io server disconnect" || reason === "io client disconnect";
       setConnectionStatus(isIntentional ? "offline" : "reconnecting");
       hasJoined.current = false;
+      setJoined(false);
     };
 
     const onConnectError = () => setConnectionStatus("reconnecting");
@@ -93,6 +98,7 @@ export const useInterviewRoom = ({
     const onSnapshot = (payload: RoomSnapshot & { roomId: string }) => {
       if (payload.roomId !== roomId) return;
       setParticipants(payload.participants ?? []);
+      setJoined(true);
       // NOTE: Yjs state is restored separately via yjs:sync-step1/step2
       // initiated by useYjsEditor after receiving this event.
     };
@@ -151,6 +157,7 @@ export const useInterviewRoom = ({
     return () => {
       socket.emit("room:leave", roomId);
       hasJoined.current = false;
+      setJoined(false);
 
       socket.off("connect",          onConnect);
       socket.off("disconnect",       onDisconnect);
@@ -179,6 +186,7 @@ export const useInterviewRoom = ({
     participants,
     activity,
     connectionStatus,
+    joined,
     endRoom,
   };
 };

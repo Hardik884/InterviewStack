@@ -13,6 +13,10 @@ const resolveSeedUser = async () => {
 
   let user = await User.findOne({ email });
   if (user) {
+    if (user.role !== "admin") {
+      user.role = "admin";
+      await user.save();
+    }
     return user;
   }
 
@@ -21,6 +25,7 @@ const resolveSeedUser = async () => {
     name: "Seed Bot",
     email,
     password: hashed,
+    role: "admin",
   });
 
   return user;

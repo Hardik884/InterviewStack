@@ -19,8 +19,10 @@ export const createSubmission = async (payload: CreateSubmissionPayload) => {
   return response.data;
 };
 
-export const fetchSubmissionsByProblem = async (problemId: string) => {
-  const response = await api.get(`/api/submissions/problem/${problemId}`);
+export const fetchSubmissionsByProblem = async (problemId: string, roomId?: string) => {
+  const response = await api.get(`/api/submissions/problem/${problemId}`, {
+    params: roomId ? { roomId } : undefined,
+  });
   return response.data;
 };
 

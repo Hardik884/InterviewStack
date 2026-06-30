@@ -13,14 +13,11 @@
  */
 
 const { generateLiveKitToken } = require("../services/livekitService");
+const { getParticipantRole, isSoloRoom } = require("../services/roomService");
+
 const getLiveKitToken = async (req, res) => {
   try {
-    console.log({
-      LIVEKIT_API_KEY: !!process.env.LIVEKIT_API_KEY,
-      LIVEKIT_API_SECRET: !!process.env.LIVEKIT_API_SECRET,
-      LIVEKIT_WS_URL: !!process.env.LIVEKIT_WS_URL,
-    });
-    const { roomId, role = "candidate" } = req.body;
+    const { roomId } = req.body;
 
     // Read env at call time so dotenv is always loaded first
     const LIVEKIT_WS_URL = process.env.LIVEKIT_WS_URL || "";
@@ -33,21 +30,36 @@ const getLiveKitToken = async (req, res) => {
       return res.status(503).json({ message: "LiveKit is not configured on this server (LIVEKIT_WS_URL missing)" });
     }
 
-    const safeRole = ["interviewer", "candidate", "observer"].includes(role)
-      ? role
-      : "candidate";
+    const targetRoom = roomId.trim();
+
+    if (isSoloRoom(targetRoom)) {
+      return res.status(400).json({ message: "Video calls are not available for solo sessions" });
+    }
+
+    // ── Authorization: the user MUST be a recorded participant of the room ───
+    // Membership is established server-side when the user joins via socket
+    // (room:join), so a token cannot be minted for an arbitrary room ID.
+    const serverRole = await getParticipantRole(targetRoom, req.user._id);
+    if (!serverRole) {
+      return res.status(403).json({ message: "You are not a participant of this room" });
+    }
+
+    // Observers may watch but not publish media. The role here is the
+    // server-assigned role — the client-supplied role is ignored.
+    const canPublish = serverRole !== "observer";
 
     const token = await generateLiveKitToken({
-      roomId: roomId.trim(),
+      roomId: targetRoom,
       userId: String(req.user._id),
       name: req.user.name || "Anonymous",
-      role: safeRole,
+      role: serverRole,
+      canPublish,
     });
 
     return res.json({
       token,
       wsUrl: LIVEKIT_WS_URL,
-      roomId: roomId.trim(),
+      roomId: targetRoom,
     });
   } catch (err) {
     console.error("[LiveKit] Token generation failed:", err.message);

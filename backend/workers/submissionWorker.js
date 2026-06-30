@@ -1,4 +1,7 @@
-const dotenv = require("dotenv");
+// Load env BEFORE requiring config/redis (it captures REDIS_URL at load time).
+const path = require("path");
+require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
+
 const { Worker } = require("bullmq");
 const { bullConnection } = require("../config/redis");
 const connectDB = require("../config/db");
@@ -7,8 +10,6 @@ const Problem = require("../models/Problem");
 const { executeAgainstTests } = require("../services/codeExecutionService");
 const { SUBMISSION_QUEUE_NAME } = require("../queues/constants");
 const aiFeedbackQueue = require("../queues/aiFeedbackQueue");
-
-dotenv.config();
 
 /**
  * Prefer explicit testCases over examples for judging;

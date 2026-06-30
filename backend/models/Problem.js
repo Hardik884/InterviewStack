@@ -26,7 +26,6 @@ const problemSchema = new mongoose.Schema(
       required: true,
       unique: true,
       trim: true,
-      index: true,
     },
     description: {
       type: String,
@@ -119,7 +118,6 @@ const problemSchema = new mongoose.Schema(
 
 problemSchema.index({ difficulty: 1, createdAt: -1 });
 problemSchema.index({ tags: 1 });
-problemSchema.index({ slug: 1 });
 problemSchema.index({ title: "text" });
 
 module.exports = mongoose.model("Problem", problemSchema);

@@ -17,6 +17,7 @@
  */
 
 const { clearYjsSnapshot } = require("./roomStateService");
+const roomService = require("../services/roomService");
 
 // Lazily required to avoid circular deps (yjsHandlers → roomHandlers → yjsHandlers)
 let _yjsHandlers = null;
@@ -55,10 +56,25 @@ const registerRoomHandlers = (io, socket) => {
     }
 
     const displayName = String(name || "Anonymous").slice(0, 64);
-    const safeRole = ["host", "interviewer", "candidate", "observer"].includes(role)
-      ? role
-      : "candidate";
     const participants = getRoomParticipants(roomId);
+
+    // ── Server-authoritative role assignment ─────────────────────────────────
+    // The client's requested role is only a hint. The server decides the real
+    // role (and persists membership) so candidates cannot spoof interviewer/
+    // host authority or hijack rooms.
+    let safeRole = "candidate";
+    try {
+      safeRole = await roomService.joinRoom({
+        roomId,
+        userId: socket.user.id,
+        name: displayName,
+        requestedRole: role,
+      });
+    } catch (err) {
+      console.error("[Socket] room membership persist failed:", err.message);
+      // Fall back to a non-privileged role rather than trusting the client.
+      safeRole = roomService.canonicalRole(role) === "interviewer" ? "observer" : roomService.canonicalRole(role);
+    }
 
     // ── Reconnect detection ──────────────────────────────────────────────────
     let isReconnect = false;
@@ -143,7 +159,11 @@ const registerRoomHandlers = (io, socket) => {
       });
     } else {
       rooms.delete(roomId);
-      console.log(`[Socket] Room ${roomId} is now empty.`);
+      // Room is empty — schedule idle Yjs cleanup (ref-count → 0). The Y.Doc is
+      // flushed to Redis and destroyed after a grace period unless someone
+      // rejoins (which cancels the timer). Prevents the doc-registry leak.
+      getYjsHandlers().scheduleRoomCleanup(roomId);
+      console.log(`[Socket] Room ${roomId} is now empty — cleanup scheduled.`);
     }
 
     console.log(`[Socket] ${participant.name} left room ${roomId}`);
@@ -169,6 +189,7 @@ const registerRoomHandlers = (io, socket) => {
     // Destroy Y.Doc and clear Redis state
     getYjsHandlers().onRoomEnd(roomId);
     await clearYjsSnapshot(roomId);
+    await roomService.endRoom(roomId);
 
     rooms.delete(roomId);
     console.log(`[Socket] Room ${roomId} ended by ${participant.name}`);

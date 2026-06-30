@@ -162,7 +162,7 @@ const getProblemById = async (req, res, next) => {
       return res.status(200).json(cached);
     }
 
-    const problem = await Problem.findById(req.params.id);
+    const problem = await Problem.findById(req.params.id).select("-testCases");
 
     if (!problem) {
       return res.status(404).json({ message: "Problem not found" });
@@ -186,7 +186,7 @@ const getProblemBySlug = async (req, res, next) => {
       return res.status(200).json(cached);
     }
 
-    const problem = await Problem.findOne({ slug: req.params.slug });
+    const problem = await Problem.findOne({ slug: req.params.slug }).select("-testCases");
 
     if (!problem) {
       return res.status(404).json({ message: "Problem not found" });

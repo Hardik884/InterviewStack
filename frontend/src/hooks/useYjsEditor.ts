@@ -36,6 +36,7 @@ import {
   Awareness,
   encodeAwarenessUpdate,
   applyAwarenessUpdate,
+  removeAwarenessStates,
 } from "y-protocols/awareness";
 import { MonacoBinding } from "y-monaco";
 import type * as Monaco from "monaco-editor";
@@ -165,6 +166,12 @@ export const useYjsEditor = ({
   // We use a ref (not state) so the handleEditorMount callback always reads
   // the current value without needing to be re-created on each render.
   const syncReceivedRef = useRef(false);
+
+  // Retry machinery for the join↔sync race: the server drops yjs:sync-step1 if
+  // room:join hasn't finished registering this socket yet. We retry until
+  // sync-step2 arrives.
+  const syncRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncAttemptsRef = useRef(0);
 
   // problemId received from server (sync-step2 or problem:set broadcast)
   const [remoteProblemId, setRemoteProblemId] = useState<string | null>(null);
@@ -358,7 +365,34 @@ export const useYjsEditor = ({
     // Listen for local Y.Doc updates → forward to server
     doc.on("update", onDocUpdate);
 
+    // If the Monaco editor is already mounted (e.g. roomId changed while the
+    // component itself stayed mounted — room switching), (re)bind it to the new
+    // doc here, since handleEditorMount only runs on the initial Monaco mount.
+    if (editorRef.current) {
+      const model = editorRef.current.getModel();
+      if (model) {
+        if (bindingRef.current) {
+          try { bindingRef.current.destroy(); } catch (_) {}
+        }
+        bindingRef.current = new MonacoBinding(
+          yText,
+          model,
+          new Set([editorRef.current]),
+          awareness
+        );
+      }
+    }
+
     return () => {
+      // Destroy the Monaco binding FIRST so it detaches from the Y.Text and
+      // Monaco model before the doc is destroyed. Without this the binding (and
+      // its observers, now pointing at a destroyed doc) leaks across room
+      // switches and React Strict-Mode double-mounts.
+      if (bindingRef.current) {
+        try { bindingRef.current.destroy(); } catch (_) {}
+        bindingRef.current = null;
+      }
+
       doc.off("update", onDocUpdate);
       awareness.off("change", onAwarenessChange);
 
@@ -414,6 +448,10 @@ export const useYjsEditor = ({
 
           // Mark that we've received the authoritative server state.
           syncReceivedRef.current = true;
+          if (syncRetryTimerRef.current) {
+            clearTimeout(syncRetryTimerRef.current);
+            syncRetryTimerRef.current = null;
+          }
           setIsConnected(true);
 
           // Now that we have the real doc state, inject starter code if room is empty
@@ -471,14 +509,44 @@ export const useYjsEditor = ({
         setRemoteProblemId(pid);
       };
 
-      // ── On (re)connect: send sync-step1 ───────────────────────────────────
-      const sendSyncStep1 = () => {
+      // ── user_left: prune the departed peer's awareness so their remote
+      //    cursor/selection does not linger as a ghost. The server emits
+      //    user_left on both explicit leave and hard disconnect.
+      const onUserLeft = ({ userId: leftId }: { userId?: string }) => {
+        const awareness = awarenessRef.current;
+        if (!awareness || !leftId) return;
+        const toRemove: number[] = [];
+        awareness.getStates().forEach((state, clientId) => {
+          const u = (state as { user?: AwarenessUser }).user;
+          if (u && u.id === leftId) toRemove.push(clientId);
+        });
+        if (toRemove.length) {
+          removeAwarenessStates(awareness, toRemove, "peer-left");
+          applyDecorationsRef.current();
+        }
+      };
+
+      // ── Request server state. Retries until sync-step2 is received so a
+      //    dropped sync-step1 (join not yet registered) self-heals. ──────────
+      const requestSync = () => {
         const doc = docRef.current;
-        if (!doc) return;
-        syncReceivedRef.current = false; // reset so we re-check injection after reconnect
+        if (!doc || !socket.connected) return;
         const sv = Y.encodeStateVector(doc);
         socket.emit("yjs:sync-step1", { roomId, stateVector: Array.from(sv) });
         setIsConnected(true);
+
+        if (syncRetryTimerRef.current) clearTimeout(syncRetryTimerRef.current);
+        if (!syncReceivedRef.current && syncAttemptsRef.current < 6) {
+          syncAttemptsRef.current += 1;
+          syncRetryTimerRef.current = setTimeout(requestSync, 700);
+        }
+      };
+
+      // Begin a fresh sync cycle (resets the retry budget).
+      const beginSync = () => {
+        syncReceivedRef.current = false;
+        syncAttemptsRef.current = 0;
+        requestSync();
       };
 
       socket.on("yjs:sync-step2",   onSyncStep2);
@@ -486,20 +554,33 @@ export const useYjsEditor = ({
       socket.on("yjs:awareness",    onYjsAwareness);
       socket.on("language:changed", onLanguageChanged);
       socket.on("problem:set",      onProblemSet);
-      socket.on("connect",          sendSyncStep1);
-      socket.on("reconnect",        sendSyncStep1);
+      socket.on("user_left",        onUserLeft);
+      // Primary trigger: room:snapshot is emitted by the server only AFTER it has
+      // fully registered this socket as a room member, so sync-step1 will pass
+      // the server's authorisation gate. connect/reconnect are kept as backups
+      // and the retry loop covers any residual race.
+      socket.on("room:snapshot",    beginSync);
+      socket.on("connect",          beginSync);
+      socket.on("reconnect",        beginSync);
 
-      // Send sync-step1 immediately if already connected
-      if (socket.connected) sendSyncStep1();
+      // If already connected, kick off a sync attempt now; the retry loop keeps
+      // trying until membership is registered server-side.
+      if (socket.connected) beginSync();
 
       cleanupFn = () => {
+        if (syncRetryTimerRef.current) {
+          clearTimeout(syncRetryTimerRef.current);
+          syncRetryTimerRef.current = null;
+        }
         socket.off("yjs:sync-step2",   onSyncStep2);
         socket.off("yjs:update",       onYjsUpdate);
         socket.off("yjs:awareness",    onYjsAwareness);
         socket.off("language:changed", onLanguageChanged);
         socket.off("problem:set",      onProblemSet);
-        socket.off("connect",          sendSyncStep1);
-        socket.off("reconnect",        sendSyncStep1);
+        socket.off("user_left",        onUserLeft);
+        socket.off("room:snapshot",    beginSync);
+        socket.off("connect",          beginSync);
+        socket.off("reconnect",        beginSync);
       };
 
       return true;

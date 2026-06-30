@@ -36,7 +36,6 @@ const resumeAnalysisSchema = new mongoose.Schema(
     jobId: {
       type: String,
       default: null,
-      index: true,
     },
     errorMessage: {
       type: String,
@@ -47,5 +46,10 @@ const resumeAnalysisSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+// ── Indexes ───────────────────────────────────────────────────────────────────
+// History list (per user) and status polling (jobId + ownership).
+resumeAnalysisSchema.index({ userId: 1, createdAt: -1 });
+resumeAnalysisSchema.index({ jobId: 1, userId: 1 });
 
 module.exports = mongoose.model("ResumeAnalysis", resumeAnalysisSchema);

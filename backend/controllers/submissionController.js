@@ -5,9 +5,12 @@ const submissionQueue = require("../queues/submissionQueue");
 const { getIO } = require("../sockets/socketRegistry");
 const { SUBMISSION_QUEUE_NAME } = require("../queues/constants");
 const { executeRun } = require("../services/codeExecutionService");
+const { isParticipant, isSoloRoom } = require("../services/roomService");
 
 /**
- * Emit a submission event to the room (if any) and directly to the user's socket.
+ * Emit a submission event to the room (if any) and directly to the user's
+ * personal room. Personal-room emits are cross-instance via the Redis adapter
+ * and avoid scanning every connected socket.
  */
 const emitToUser = (io, userId, eventName, payload) => {
   if (!io) return;
@@ -17,13 +20,8 @@ const emitToUser = (io, userId, eventName, payload) => {
     io.to(payload.roomId).emit(eventName, payload);
   }
 
-  // Direct-to-user socket broadcast for users not in a room
-  const userIdStr = String(userId);
-  io.sockets.sockets.forEach((socket) => {
-    if (socket.user?.id === userIdStr) {
-      socket.emit(eventName, payload);
-    }
-  });
+  // Direct-to-user broadcast (works across instances).
+  io.to(`user:${String(userId)}`).emit(eventName, payload);
 };
 
 const createSubmission = async (req, res, next) => {
@@ -41,11 +39,23 @@ const createSubmission = async (req, res, next) => {
       return res.status(404).json({ message: "Problem not found" });
     }
 
+    // Only attach the submission to a room the user actually belongs to.
+    // Otherwise treat it as a personal submission (empty roomId) so room
+    // participants cannot gain access to feedback for code they never saw.
+    let resolvedRoomId = "";
+    if (roomId && !isSoloRoom(roomId)) {
+      if (await isParticipant(roomId, req.user._id)) {
+        resolvedRoomId = roomId;
+      }
+    } else if (roomId) {
+      resolvedRoomId = roomId; // solo-* sessions are owner-only by definition
+    }
+
     const submission = await Submission.create({
       userId: req.user._id,
       submittedBy: req.user._id,
       problemId,
-      roomId: roomId || "",
+      roomId: resolvedRoomId,
       code: resolvedCode,
       sourceCode: resolvedCode,
       language,
@@ -142,8 +152,24 @@ const getMySubmissions = async (req, res, next) => {
 
 const getSubmissionsByProblem = async (req, res, next) => {
   try {
-    const submissions = await Submission.find({ problemId: req.params.problemId })
-      .sort({ createdAt: -1 });
+    const { problemId } = req.params;
+    const roomId = typeof req.query.roomId === "string" ? req.query.roomId : "";
+
+    // Default scope: only the requesting user's own submissions for this problem
+    // (prevents enumeration of other users' code/verdicts).
+    let filter = {
+      problemId,
+      $or: [{ userId: req.user._id }, { submittedBy: req.user._id }],
+    };
+
+    // Room scope: if a real (non-solo) roomId is supplied AND the requester is a
+    // verified participant of that room, return that room's submissions so the
+    // interviewer and candidate share visibility within the interview.
+    if (roomId && !isSoloRoom(roomId) && (await isParticipant(roomId, req.user._id))) {
+      filter = { problemId, roomId };
+    }
+
+    const submissions = await Submission.find(filter).sort({ createdAt: -1 });
 
     return res.status(200).json({ submissions });
   } catch (error) {
@@ -154,7 +180,7 @@ const getSubmissionsByProblem = async (req, res, next) => {
 const getSubmissionFeedback = async (req, res, next) => {
   try {
     const { submissionId } = req.params;
-    // Also select roomId so we can grant access to room participants (interviewers)
+    // Also select roomId so we can grant access to verified room participants.
     const submission = await Submission.findById(submissionId).select(
       "aiFeedback userId submittedBy roomId"
     );
@@ -167,15 +193,18 @@ const getSubmissionFeedback = async (req, res, next) => {
 
     // 1. Submission owner (candidate who submitted)
     const ownerId = String(submission.userId || submission.submittedBy || "");
-    const isOwner = ownerId && requestingUserId === ownerId;
+    const isOwner = Boolean(ownerId) && requestingUserId === ownerId;
 
-    // 2. Room participant (interviewer / any authorized room member).
-    //    Any authenticated user in the same room may view feedback.
-    //    Solo submissions (roomId starts with "solo-" or is empty) are owner-only.
+    // 2. Verified room participant (interviewer / observer / candidate).
+    //    Membership is checked against the durable Room record — NOT inferred
+    //    from the roomId string. Solo submissions are owner-only.
+    let authorized = isOwner;
     const roomId = submission.roomId || "";
-    const isRoomParticipant = roomId && !roomId.startsWith("solo-");
+    if (!authorized && roomId && !isSoloRoom(roomId)) {
+      authorized = await isParticipant(roomId, req.user._id);
+    }
 
-    if (!isOwner && !isRoomParticipant) {
+    if (!authorized) {
       return res.status(403).json({ message: "Not authorized" });
     }
 

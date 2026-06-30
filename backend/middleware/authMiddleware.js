@@ -21,7 +21,7 @@ const protect = async (req, res, next) => {
 
     const decoded = jwt.verify(token, secret);
 
-    const user = await User.findById(decoded.id).select("_id name email");
+    const user = await User.findById(decoded.id).select("_id name email role");
     if (!user) {
       return res.status(401).json({ message: "User not found" });
     }
@@ -33,6 +33,22 @@ const protect = async (req, res, next) => {
   }
 };
 
+/**
+ * Role-based authorization guard. Use AFTER `protect`.
+ * Example: router.post("/", protect, authorize("admin"), handler)
+ */
+const authorize = (...allowedRoles) => (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+  const role = req.user.role || "candidate";
+  if (!allowedRoles.includes(role)) {
+    return res.status(403).json({ message: "Forbidden: insufficient permissions" });
+  }
+  return next();
+};
+
 module.exports = {
   protect,
+  authorize,
 };

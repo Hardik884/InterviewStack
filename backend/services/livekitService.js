@@ -18,7 +18,7 @@ const { AccessToken } = require("livekit-server-sdk");
  * @param {number} [opts.ttlSecs]   — Token TTL in seconds (default: 4h)
  * @returns {Promise<string>}       — Signed JWT token
  */
-const generateLiveKitToken = async ({ roomId, userId, name, role, ttlSecs = 14400 }) => {
+const generateLiveKitToken = async ({ roomId, userId, name, role, canPublish = true, ttlSecs = 14400 }) => {
   const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || "";
   const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || "";
   if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
@@ -35,7 +35,7 @@ const generateLiveKitToken = async ({ roomId, userId, name, role, ttlSecs = 1440
   at.addGrant({
     roomJoin: true,
     room: roomId,
-    canPublish: true,
+    canPublish,
     canSubscribe: true,
     canPublishData: true,
   });

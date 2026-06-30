@@ -67,6 +67,7 @@ const submissionSchema = new mongoose.Schema(
         "Runtime Error",
         "Time Limit Exceeded",
         "Compilation Error",
+        "Judge Error",
         "Pending",
       ],
       default: "Pending",
@@ -112,5 +113,14 @@ const submissionSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+// ── Indexes ───────────────────────────────────────────────────────────────────
+// Support the hot query paths: per-user history, per-problem lists, room scope,
+// and verdict-based analytics aggregations.
+submissionSchema.index({ userId: 1, createdAt: -1 });
+submissionSchema.index({ submittedBy: 1, createdAt: -1 });
+submissionSchema.index({ problemId: 1, createdAt: -1 });
+submissionSchema.index({ roomId: 1, createdAt: -1 });
+submissionSchema.index({ verdict: 1 });
 
 module.exports = mongoose.model("Submission", submissionSchema);

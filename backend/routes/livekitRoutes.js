@@ -10,9 +10,17 @@
 const express = require("express");
 const { protect } = require("../middleware/authMiddleware");
 const { getLiveKitToken } = require("../controllers/livekitController");
+const { rateLimit } = require("../middleware/rateLimit");
 
 const router = express.Router();
 
-router.post("/token", protect, getLiveKitToken);
+const tokenLimiter = rateLimit({
+  keyPrefix: "livekit:token",
+  windowMs: 5 * 60 * 1000,
+  max: 30,
+  message: "Too many token requests. Please slow down.",
+});
+
+router.post("/token", protect, tokenLimiter, getLiveKitToken);
 
 module.exports = router;

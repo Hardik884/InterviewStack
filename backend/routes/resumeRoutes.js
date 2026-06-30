@@ -11,8 +11,17 @@ const {
   getResumeStatus,
 } = require("../controllers/resumeController");
 const { validateObjectIdParam } = require("../middleware/validateRequest");
+const { rateLimit } = require("../middleware/rateLimit");
 
 const router = express.Router();
+
+// Resume parsing + Gemini analysis is expensive — limit uploads per user.
+const uploadLimiter = rateLimit({
+  keyPrefix: "resume:upload",
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: "Resume upload limit reached. Please try again later.",
+});
 
 const maxFileSizeMb = Math.max(
   parseInt(process.env.RESUME_MAX_FILE_MB, 10) || 5,
@@ -78,7 +87,7 @@ const upload = multer({
 });
 
 // POST /api/resume/upload
-router.post("/upload", protect, upload.single("resume"), uploadResume);
+router.post("/upload", protect, uploadLimiter, upload.single("resume"), uploadResume);
 
 // GET /api/resume/history
 router.get("/history", protect, getResumeHistory);

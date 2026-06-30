@@ -175,7 +175,7 @@ const InterviewWorkspace = () => {
   const [sharedRunResult, setSharedRunResult] = useState<(RunResult & { fromSelf?: boolean }) | null>(null);
   const [sharedRunStatus, setSharedRunStatus] = useState<"idle" | "done" | "error">("idle");
 
-  const { data: submissionData } = useSubmissionsByProblem(effectiveProblemId);
+  const { data: submissionData } = useSubmissionsByProblem(effectiveProblemId, roomId);
   const submissionMutation = useCreateSubmission();
   const runMutation        = useRunSubmission();
   const submissions        = (submissionData?.submissions || []) as SubmissionItem[];
@@ -198,7 +198,7 @@ const InterviewWorkspace = () => {
   );
 
   // ── Room presence (participants, activity, connection status) ─────────────
-  const { participants, activity } = useInterviewRoom({
+  const { participants, activity, joined } = useInterviewRoom({
     token,
     roomId,
     name: user?.name || "Anonymous",
@@ -220,7 +220,9 @@ const InterviewWorkspace = () => {
   } = useLiveKitCall({
     roomId,
     role,
-    enabled: !isSoloSession,
+    // Only request a LiveKit token after the socket room join is confirmed
+    // (server has persisted membership). Prevents a 403 race on mount.
+    enabled: !isSoloSession && joined,
   });
 
   // ── Connection status (for banner) ────────────────────────────────────────

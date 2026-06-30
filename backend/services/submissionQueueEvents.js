@@ -1,7 +1,24 @@
 const { Queue, QueueEvents } = require("bullmq");
 const { bullConnection } = require("../config/redis");
 const Submission = require("../models/Submission");
+const { delCache, delCacheByPattern } = require("../services/cacheService");
 const { SUBMISSION_QUEUE_NAME, AI_FEEDBACK_QUEUE_NAME } = require("../queues/constants");
+
+/**
+ * Invalidate a user's analytics caches after a verdict changes so dashboards
+ * and the leaderboard reflect the new result immediately (instead of waiting
+ * for the cache TTL to expire).
+ */
+const invalidateAnalyticsCache = async (userId) => {
+  if (!userId) return;
+  try {
+    await delCache(`analytics:dashboard:${userId}`);
+    await delCache(`analytics:activity:${userId}`);
+    await delCacheByPattern("analytics:leaderboard:*");
+  } catch (err) {
+    console.error("Analytics cache invalidation error:", err.message);
+  }
+};
 
 /**
  * Emit a submission update to:
@@ -31,13 +48,9 @@ const emitSubmissionUpdate = (io, submission) => {
     });
   }
 
-  // Also emit directly to every socket owned by this user
+  // Also emit directly to the submission owner's personal room (cross-instance).
   const userId = String(submission.userId || submission.submittedBy);
-  io.sockets.sockets.forEach((socket) => {
-    if (socket.user?.id === userId) {
-      socket.emit("submission:update", payload);
-    }
-  });
+  io.to(`user:${userId}`).emit("submission:update", payload);
 };
 
 /**
@@ -56,11 +69,7 @@ const emitFeedbackUpdate = (io, submission) => {
   }
 
   const userId = String(submission.userId || submission.submittedBy);
-  io.sockets.sockets.forEach((socket) => {
-    if (socket.user?.id === userId) {
-      socket.emit("feedback:update", payload);
-    }
-  });
+  io.to(`user:${userId}`).emit("feedback:update", payload);
 };
 
 const registerSubmissionQueueEvents = (io) => {
@@ -84,6 +93,7 @@ const registerSubmissionQueueEvents = (io) => {
       }
 
       emitSubmissionUpdate(io, submission);
+      await invalidateAnalyticsCache(String(submission.userId || submission.submittedBy));
     } catch (error) {
       console.error("Submission queue event (completed) error:", error.message);
     }
@@ -103,6 +113,7 @@ const registerSubmissionQueueEvents = (io) => {
       }
 
       emitSubmissionUpdate(io, submission);
+      await invalidateAnalyticsCache(String(submission.userId || submission.submittedBy));
     } catch (error) {
       console.error("Submission queue event (failed) error:", error.message);
     }

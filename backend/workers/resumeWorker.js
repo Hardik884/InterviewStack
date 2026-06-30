@@ -4,6 +4,7 @@ const dotenv = require("dotenv");
 // Resolve .env from project root regardless of where the worker is invoked from
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
+const fs = require("fs/promises");
 const { Worker } = require("bullmq");
 const { bullConnection } = require("../config/redis");
 const connectDB = require("../config/db");
@@ -12,6 +13,25 @@ const { parsePdfResume } = require("../services/resumeParser");
 const { analyzeResume } = require("../services/aiService");
 
 const QUEUE_NAME = "resume-analysis";
+
+/**
+ * Best-effort deletion of an uploaded resume PDF.
+ * The parsed text + AI feedback are persisted in MongoDB, so the raw file is
+ * not needed after processing. Removing it prevents unbounded disk growth and
+ * limits how long PII is retained on disk.
+ */
+const cleanupResumeFile = async (filePath, analysisId) => {
+  if (!filePath) return;
+  try {
+    await fs.unlink(filePath);
+    await ResumeAnalysis.findByIdAndUpdate(analysisId, { filePath: null });
+    console.log(`[ResumeWorker] CLEANUP — removed processed file ${filePath}`);
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      console.warn(`[ResumeWorker] CLEANUP — could not remove ${filePath}: ${err.message}`);
+    }
+  }
+};
 
 const startWorker = async () => {
   console.log("[ResumeWorker] WORKER_STARTED — Connecting to database...");
@@ -75,6 +95,10 @@ const startWorker = async () => {
       });
 
       console.log(`[ResumeWorker] RESULT_SAVED — Analysis ${analysisId} saved to DB.`);
+
+      // Raw PDF no longer needed — remove it (retention / disk hygiene).
+      await cleanupResumeFile(filePath, analysisId);
+
       return { status: "completed", atsScore: aiResult.atsScore };
     },
     {
@@ -101,6 +125,12 @@ const startWorker = async () => {
       }).catch((dbErr) => {
         console.error("[ResumeWorker] Failed to update error status in DB:", dbErr.message);
       });
+
+      // On final failure (no retries left), remove the uploaded file too.
+      const attempts = job.opts?.attempts ?? 1;
+      if ((job.attemptsMade ?? 0) >= attempts) {
+        await cleanupResumeFile(job.data.filePath, job.data.analysisId);
+      }
     }
   });
 
