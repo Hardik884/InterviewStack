@@ -3,7 +3,7 @@ const path = require("path");
 require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
 const { Worker } = require("bullmq");
-const { bullConnection } = require("../config/redis");
+const { bullConnection, attachRedisErrorLogger } = require("../config/redis");
 const connectDB = require("../config/db");
 const Submission = require("../models/Submission");
 const Problem = require("../models/Problem");
@@ -169,9 +169,7 @@ const startWorker = async () => {
     console.warn(`[AI Feedback Worker] Job ${jobId} stalled`)
   );
 
-  worker.on("error", (error) =>
-    console.error("[AI Feedback Worker] Worker error:", error.message)
-  );
+  attachRedisErrorLogger(worker, "aiFeedbackWorker");
 
   // Graceful shutdown
   const shutdown = async (signal) => {

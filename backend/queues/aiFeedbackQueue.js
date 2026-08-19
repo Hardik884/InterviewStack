@@ -1,5 +1,5 @@
 const { Queue } = require("bullmq");
-const { bullConnection } = require("../config/redis");
+const { bullConnection, attachRedisErrorLogger } = require("../config/redis");
 const { AI_FEEDBACK_QUEUE_NAME } = require("./constants");
 
 const aiFeedbackQueue = new Queue(AI_FEEDBACK_QUEUE_NAME, {
@@ -14,5 +14,7 @@ const aiFeedbackQueue = new Queue(AI_FEEDBACK_QUEUE_NAME, {
     removeOnFail: 50,
   },
 });
+
+attachRedisErrorLogger(aiFeedbackQueue, "aiFeedbackQueue");
 
 module.exports = aiFeedbackQueue;

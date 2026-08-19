@@ -1,5 +1,5 @@
 const { Queue } = require("bullmq");
-const { bullConnection } = require("../config/redis");
+const { bullConnection, attachRedisErrorLogger } = require("../config/redis");
 
 const resumeQueue = new Queue("resume-analysis", {
   connection: bullConnection,
@@ -13,5 +13,7 @@ const resumeQueue = new Queue("resume-analysis", {
     removeOnFail: 50,
   },
 });
+
+attachRedisErrorLogger(resumeQueue, "resumeQueue");
 
 module.exports = resumeQueue;

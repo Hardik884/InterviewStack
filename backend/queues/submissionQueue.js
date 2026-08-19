@@ -1,5 +1,5 @@
 const { Queue } = require("bullmq");
-const { bullConnection } = require("../config/redis");
+const { bullConnection, attachRedisErrorLogger } = require("../config/redis");
 const { SUBMISSION_QUEUE_NAME } = require("./constants");
 
 const submissionQueue = new Queue(SUBMISSION_QUEUE_NAME, {
@@ -14,5 +14,7 @@ const submissionQueue = new Queue(SUBMISSION_QUEUE_NAME, {
     removeOnFail: 50,
   },
 });
+
+attachRedisErrorLogger(submissionQueue, "submissionQueue");
 
 module.exports = submissionQueue;

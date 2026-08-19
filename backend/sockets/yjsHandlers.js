@@ -183,7 +183,7 @@ const schedulePersist = (roomId, doc) => {
 const initRedisPubSub = (io) => {
   ioRef = io;
   try {
-    const { bullConnection } = require("../config/redis");
+    const { bullConnection, attachRedisErrorLogger } = require("../config/redis");
     subscriber = bullConnection.duplicate();
     publisher  = bullConnection.duplicate();
 
@@ -203,12 +203,8 @@ const initRedisPubSub = (io) => {
       } catch (_) {}
     });
 
-    subscriber.on("error", (err) => {
-      if (err.code !== "ECONNREFUSED") console.error("[Yjs PubSub subscriber]", err.message);
-    });
-    publisher.on("error", (err) => {
-      if (err.code !== "ECONNREFUSED") console.error("[Yjs PubSub publisher]", err.message);
-    });
+    attachRedisErrorLogger(subscriber, "yjsPubSubSubscriber");
+    attachRedisErrorLogger(publisher, "yjsPubSubPublisher");
 
     console.log("[Yjs] Redis Pub/Sub ready (multi-instance support active)");
   } catch (err) {

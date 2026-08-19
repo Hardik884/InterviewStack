@@ -1,5 +1,5 @@
 const { Queue, QueueEvents } = require("bullmq");
-const { bullConnection } = require("../config/redis");
+const { bullConnection, attachRedisErrorLogger } = require("../config/redis");
 const Submission = require("../models/Submission");
 const { delCache, delCacheByPattern } = require("../services/cacheService");
 const { SUBMISSION_QUEUE_NAME, AI_FEEDBACK_QUEUE_NAME } = require("../queues/constants");
@@ -75,6 +75,7 @@ const emitFeedbackUpdate = (io, submission) => {
 const registerSubmissionQueueEvents = (io) => {
   const queue = new Queue(SUBMISSION_QUEUE_NAME, { connection: bullConnection });
   const queueEvents = new QueueEvents(SUBMISSION_QUEUE_NAME, { connection: bullConnection });
+  attachRedisErrorLogger(queue, "submissionQueue");
 
   queueEvents.on("ready", () => {
     console.log("Submission queue events ready");
@@ -123,9 +124,7 @@ const registerSubmissionQueueEvents = (io) => {
     console.warn("Submission queue stalled", { jobId });
   });
 
-  queueEvents.on("error", (error) => {
-    console.error("Submission queue event error:", error.message);
-  });
+  attachRedisErrorLogger(queueEvents, "submissionQueueEvents");
 
   return queueEvents;
 };
@@ -137,6 +136,7 @@ const registerSubmissionQueueEvents = (io) => {
 const registerAiFeedbackQueueEvents = (io) => {
   const feedbackQueue = new Queue(AI_FEEDBACK_QUEUE_NAME, { connection: bullConnection });
   const feedbackQueueEvents = new QueueEvents(AI_FEEDBACK_QUEUE_NAME, { connection: bullConnection });
+  attachRedisErrorLogger(feedbackQueue, "aiFeedbackQueue");
 
   feedbackQueueEvents.on("ready", () => {
     console.log("AI Feedback queue events ready");
@@ -176,9 +176,7 @@ const registerAiFeedbackQueueEvents = (io) => {
     console.warn("AI Feedback queue stalled", { jobId });
   });
 
-  feedbackQueueEvents.on("error", (error) => {
-    console.error("AI Feedback queue event error:", error.message);
-  });
+  attachRedisErrorLogger(feedbackQueueEvents, "aiFeedbackQueueEvents");
 
   return feedbackQueueEvents;
 };

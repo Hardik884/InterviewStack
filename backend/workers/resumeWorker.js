@@ -6,7 +6,7 @@ dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
 const fs = require("fs/promises");
 const { Worker } = require("bullmq");
-const { bullConnection } = require("../config/redis");
+const { bullConnection, attachRedisErrorLogger } = require("../config/redis");
 const connectDB = require("../config/db");
 const ResumeAnalysis = require("../models/ResumeAnalysis");
 const { parsePdfResume } = require("../services/resumeParser");
@@ -41,11 +41,6 @@ const startWorker = async () => {
   // Verify Redis connectivity before registering worker
   bullConnection.on("ready", () => {
     console.log("[ResumeWorker] WORKER_STARTED — Redis (BullMQ) connected and ready.");
-  });
-  bullConnection.on("error", (err) => {
-    if (err.code !== "ECONNREFUSED") {
-      console.error("[ResumeWorker] Redis error:", err.message);
-    }
   });
 
   const resumeWorker = new Worker(
@@ -134,9 +129,7 @@ const startWorker = async () => {
     }
   });
 
-  resumeWorker.on("error", (err) => {
-    console.error("[ResumeWorker] Worker error:", err.message);
-  });
+  attachRedisErrorLogger(resumeWorker, "resumeWorker");
 
   resumeWorker.on("active", (job) => {
     console.log(`[ResumeWorker] Job ${job.id} is now ACTIVE.`);

@@ -17,6 +17,7 @@ dist-ssr
 # Environment files
 .env
 .env.*
+!.env.example
 
 # Local config
 *.local
@@ -35,6 +36,7 @@ dist-ssr
 node_modules
 .env
 .env.*
+!.env.example
 dist
 build
 uploads

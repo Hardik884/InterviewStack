@@ -6,7 +6,7 @@ const { registerYjsHandlers, initRedisPubSub } = require("./yjsHandlers");
 const { setIO } = require("./socketRegistry");
 const { isAllowedOrigin } = require("../config/cors");
 const { checkSocketConnectionLimit } = require("../middleware/rateLimit");
-const { bullConnection } = require("../config/redis");
+const { bullConnection, attachRedisErrorLogger } = require("../config/redis");
 
 const initSocket = (httpServer) => {
   const io = new Server(httpServer, {
@@ -70,8 +70,8 @@ const initSocket = (httpServer) => {
   try {
     const pubClient = bullConnection.duplicate();
     const subClient = bullConnection.duplicate();
-    pubClient.on("error", () => {});
-    subClient.on("error", () => {});
+    attachRedisErrorLogger(pubClient, "socketAdapterPub");
+    attachRedisErrorLogger(subClient, "socketAdapterSub");
     io.adapter(createAdapter(pubClient, subClient));
     console.log("[Socket] Redis adapter attached (multi-instance broadcasts active)");
   } catch (err) {
