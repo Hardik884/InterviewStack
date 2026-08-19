@@ -11,7 +11,8 @@
     "worker": "node workers/submissionWorker.js",
     "dev:all": "concurrently -k \"npm run dev\" \"npm run worker:submission\" \"npm run worker:resume\" \"npm run worker:ai-feedback\"",
     "seed:problems": "node scripts/seedProblems.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node tests/yjsStarterCode.test.js && node tests/yjsSync.test.js && node tests/yjsCollab.test.js",
+    "test:collab": "node tests/yjsCollab.test.js"
   },
   "keywords": [],
   "author": "",

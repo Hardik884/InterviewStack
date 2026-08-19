@@ -32,7 +32,7 @@
  *   run:result       { roomId, result }
  *
  * Socket events (server → client):
- *   yjs:sync-step2   { roomId, update: number[], language, problemId }
+ *   yjs:sync-step2   { roomId, update: number[], stateVector: number[], language, problemId }
  *   yjs:update       { roomId, update: number[] }
  *   yjs:awareness    { roomId, update: number[] }
  *   language:changed { roomId, language }
@@ -228,7 +228,11 @@ const unsubscribeFromRoom = (roomId) => {
 
 const registerYjsHandlers = (io, socket) => {
   // ── yjs:sync-step1 ────────────────────────────────────────────────────────
-  // Client sends its current state vector; server replies with the diff.
+  // Client sends its current state vector; server replies with the diff AND
+  // its own state vector. The second half makes the handshake bidirectional:
+  // without it the server never learns what the CLIENT holds that the server
+  // is missing, so any edit made while the client was disconnected (or before
+  // the handshake completed) would be silently lost to every other peer.
   const onSyncStep1 = async ({ roomId, stateVector }) => {
     if (!roomId || !isAuthorised(socket, roomId)) return;
 
@@ -244,6 +248,7 @@ const registerYjsHandlers = (io, socket) => {
       socket.emit("yjs:sync-step2", {
         roomId,
         update: Array.from(missingUpdate),
+        stateVector: Array.from(Y.encodeStateVector(doc)),
         language,
         problemId,
       });
